@@ -526,12 +526,12 @@ impl GridHandler {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn new_for_test(rows: usize, columns: usize) -> Self {
         Self::new_for_test_with_scroll_limit(rows, columns, 0)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn new_for_test_with_scroll_limit(
         rows: usize,
         columns: usize,
@@ -2677,8 +2677,10 @@ impl GridHandler {
     ///
     /// If the written text wraps to a new line, the WRAPLINE flag will be set
     /// appropriately.
-    #[cfg(test)]
-    pub(super) fn input_at_cursor(&mut self, text: &str) {
+    // Also built for `test-util` so the app crate's grid_renderer tests can write
+    // into a grid (the RTL layout tests), now that this type lives in its own crate.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn input_at_cursor(&mut self, text: &str) {
         use crate::model::VisiblePoint;
 
         let columns = self.columns();
