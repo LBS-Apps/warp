@@ -71,8 +71,15 @@ jobs:
           # Note: private warp-channel-config and diesel_cli are intentionally
           # skipped — not needed for the oss app bundle.
 
-      - name: Install cargo-bundle
-        run: ./script/install_cargo_bundle || cargo install cargo-bundle --locked
+      - name: Install cargo tooling (bundle + about)
+        run: |
+          set -euo pipefail
+          # cargo-bundle assembles the .app.
+          ./script/install_cargo_bundle || cargo install cargo-bundle --locked
+          # cargo-about generates THIRD_PARTY_LICENSES.txt in the bundle's
+          # post-step (prepare_bundled_resources). Pin matches the repo's
+          # install_cargo_release_deps so it stays compatible with about.toml.
+          cargo install --locked cargo-about@0.8.4
 
       - name: Bundle WarpOss.app (self-signed, arm64)
         env:
