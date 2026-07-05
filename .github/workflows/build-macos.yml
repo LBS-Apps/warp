@@ -1,0 +1,115 @@
+name: Build macOS (RTL fork)
+
+# Builds a self-signed WarpOss.app carrying the RTL patch, for personal use.
+# Runs on every push to rtl-fix (i.e. after each upstream resync) and on manual dispatch.
+# Uses the public `oss` channel (no Sentry / no internal agent-debug features) so the
+# build is fully self-contained and needs no Warp-internal secrets or Apple Developer cert.
+
+on:
+  push:
+    branches: [rtl-fix]
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Build profile'
+        type: choice
+        default: release
+        options: [release, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-15 is Apple Silicon (arm64) — matches the target we bundle.
+    runs-on: macos-15
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          rustup show
+          rustup target add aarch64-apple-darwin
+          cargo --version
+
+      - name: Authenticate git to GitHub (avoid anon rate-limits on cargo git deps)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Bust cache when Cargo.lock changes; share across profiles.
+          shared-key: warp-macos-rtl
+
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          # protoc: the workspace compiles .proto files via prost-build. Not on
+          # the GitHub macos image (upstream's own runners have it preinstalled).
+          brew install protobuf
+          protoc --version
+          # Metal toolchain is preinstalled on GitHub's macos-15 image. The
+          # `-downloadComponent MetalToolchain` flag isn't valid on that Xcode
+          # (exits 64), so treat the download as best-effort and rely on the
+          # bundled toolchain. If shader compilation later fails, revisit here.
+          xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 \
+            || echo "Metal toolchain: using preinstalled (download not applicable on this Xcode)."
+          # Note: private warp-channel-config and diesel_cli are intentionally
+          # skipped — not needed for the oss app bundle.
+
+      - name: Install cargo-bundle
+        run: ./script/install_cargo_bundle || cargo install cargo-bundle --locked
+
+      - name: Bundle WarpOss.app (self-signed, arm64)
+        env:
+          # release (default) -> release-lto profile; dev -> fast debug build.
+          PROFILE: ${{ github.event.inputs.profile || 'release' }}
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "$PROFILE" = "dev" ]; then
+            EXTRA="--debug"
+          fi
+          ./script/bundle --selfsign --arch aarch64 -c oss $EXTRA
+
+      - name: Locate .app
+        id: findapp
+        run: |
+          set -euo pipefail
+          APP="$(find target -type d -path '*bundle/osx*' -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "No .app produced under target/**/bundle/osx" >&2
+            find target -type d -name '*.app' || true
+            exit 1
+          fi
+          echo "app_path=$APP" >> "$GITHUB_OUTPUT"
+          echo "Found: $APP"
+
+      - name: Zip .app (preserve symlinks/perms)
+        run: |
+          set -euo pipefail
+          APP="${{ steps.findapp.outputs.app_path }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" WarpOss-rtl-arm64.zip
+          ls -lh WarpOss-rtl-arm64.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WarpOss-rtl-arm64
+          path: WarpOss-rtl-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
