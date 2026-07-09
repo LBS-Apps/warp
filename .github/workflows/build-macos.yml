@@ -62,6 +62,11 @@ jobs:
           # the GitHub macos image (upstream's own runners have it preinstalled).
           brew install protobuf
           protoc --version
+          # create-dmg: script/macos/bundle calls it unconditionally to build
+          # WarpOss.dmg (no skip flag). We ship the zipped .app, not the dmg, but
+          # the bundle step aborts (exit 127) without it. Homebrew formula.
+          brew install create-dmg
+          create-dmg --version
           # Metal toolchain is preinstalled on GitHub's macos-15 image. The
           # `-downloadComponent MetalToolchain` flag isn't valid on that Xcode
           # (exits 64), so treat the download as best-effort and rely on the
