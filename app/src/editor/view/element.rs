@@ -1037,7 +1037,15 @@ impl EditorElement {
                                 .max(0.0),
                         )
                         + vec2f(
-                            cursor_row_layout.x_for_index(cursor_x_index),
+                            // Use the caret-position accessor rather than `x_for_index`. On RTL
+                            // (bidi) rows the shaper reorders glyphs, so a logical column no longer
+                            // maps to `glyph.index * advance`; `x_for_index` returns the glyph's
+                            // left edge (and falls back to `self.width` at end-of-line), which
+                            // leaves the caret on the wrong side / far right while RTL text grows
+                            // leftward. `caret_position_for_index` walks `caret_positions`, which
+                            // carry the shaper's visual `position_in_line` per offset, so the caret
+                            // tracks the true insertion point. Matches `crates/editor`.
+                            cursor_row_layout.caret_position_for_index(cursor_x_index),
                             (selection.end.row() - first_visible_row) as f32
                                 * line_parameters.line_height,
                         );
