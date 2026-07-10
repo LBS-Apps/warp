@@ -61,7 +61,19 @@ enum CTParagraphStyleSpecifier {
     TabStops = 4,
     DefaultTabInterval = 5,
     LineHeightMultiple = 7,
+    // kCTParagraphStyleSpecifierBaseWritingDirection. Value is a CTWritingDirection
+    // (int8_t). Used to pin the paragraph's bidi base direction instead of letting
+    // Core Text auto-detect it from the first strong character.
+    BaseWritingDirection = 13,
 }
+
+/// `kCTWritingDirectionLeftToRight` (a `CTWritingDirection`, i.e. `int8_t`). Forcing
+/// this as the base direction keeps a terminal line laid out left-to-right — cell 0
+/// on the left, prompt on the left — even when its first word is Hebrew/Arabic, while
+/// RTL runs within the line are still shaped and reordered by Core Text. The Core Text
+/// default is `kCTWritingDirectionNatural` (-1), which flips the whole line to RTL base
+/// when it starts with a strong RTL character.
+const CT_WRITING_DIRECTION_LTR: i8 = 0;
 
 /// See https://developer.apple.com/documentation/coretext/ctparagraphstylesetting
 /// for the API specification on paragraph style settings.
@@ -80,6 +92,8 @@ struct CTParagraphStyleSetting<'a> {
 
 enum ParagraphStyleValue {
     Float(Box<CGFloat>),
+    /// A single signed byte, e.g. a `CTWritingDirection` for BaseWritingDirection.
+    Int8(Box<i8>),
     Array {
         _array: CFArray<CFType>,
         stable_ref: Box<*const c_void>,
@@ -99,6 +113,14 @@ impl ParagraphStyleSetting {
         ParagraphStyleSetting {
             spec,
             value: ParagraphStyleValue::Float(Box::new(value)),
+        }
+    }
+
+    /// A `BaseWritingDirection` setting carrying a `CTWritingDirection` (int8_t).
+    fn new_base_writing_direction(direction: i8) -> ParagraphStyleSetting {
+        ParagraphStyleSetting {
+            spec: CTParagraphStyleSpecifier::BaseWritingDirection,
+            value: ParagraphStyleValue::Int8(Box::new(direction)),
         }
     }
 
@@ -126,6 +148,16 @@ impl ParagraphStyleSetting {
                 CTParagraphStyleSetting {
                     spec: self.spec,
                     value_size: std::mem::size_of::<CGFloat>(),
+                    value: raw_ptr,
+                    _phantom: PhantomData,
+                }
+            }
+            ParagraphStyleValue::Int8(val) => {
+                let raw_ptr = val.as_ref() as *const i8 as *const c_void;
+
+                CTParagraphStyleSetting {
+                    spec: self.spec,
+                    value_size: std::mem::size_of::<i8>(),
                     value: raw_ptr,
                     _phantom: PhantomData,
                 }
@@ -407,6 +439,16 @@ fn push_paragraph_style_settings(
     first_line_head_indent: Option<f32>,
     tab_interval: Option<CGFloat>,
 ) {
+    // Pin the paragraph base direction to LTR for all terminal/editor lines. Core
+    // Text otherwise auto-detects it from the first strong character, which flips a
+    // whole line to RTL base when it starts with Hebrew/Arabic and scrambles the
+    // visual order of the prompt and any LTR tokens. RTL runs are still shaped and
+    // reordered within the line. This also guarantees the settings vec is non-empty,
+    // so the paragraph style is always applied.
+    paragraph_style_settings.push(ParagraphStyleSetting::new_base_writing_direction(
+        CT_WRITING_DIRECTION_LTR,
+    ));
+
     if let Some(first_line_head_indent_value) = first_line_head_indent {
         paragraph_style_settings.push(ParagraphStyleSetting::new_float_setting(
             CTParagraphStyleSpecifier::FirstLineHeadIndent,
