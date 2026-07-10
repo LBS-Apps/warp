@@ -358,12 +358,14 @@ impl ViewSnapshot {
             let start_column = head.column().saturating_sub(3);
             let end_column = cmp::min(map.line_len(head.row(), app).unwrap(), head.column() + 3);
 
+            // caret_position_for_index (not x_for_index) so the horizontal auto-scroll
+            // target tracks the visual caret column on RTL/bidi rows.
             if let Some(line) = layouts.get((head.row() - start_row) as usize) {
-                target_left = target_left.min(line.x_for_index(start_column as usize));
+                target_left = target_left.min(line.caret_position_for_index(start_column as usize));
             }
             if let Some(line) = layouts.get((head.row() - start_row) as usize) {
-                target_right =
-                    target_right.max(line.x_for_index(end_column as usize) + max_glyph_width);
+                target_right = target_right
+                    .max(line.caret_position_for_index(end_column as usize) + max_glyph_width);
             }
         }
         target_right = target_right.min(scroll_width);

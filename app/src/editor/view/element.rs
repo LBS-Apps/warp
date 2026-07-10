@@ -763,21 +763,30 @@ impl EditorElement {
         };
 
         let start_x = if row == selection.start.row() {
-            line_layout.x_for_index(selection.start.column() as usize)
+            line_layout.caret_position_for_index(selection.start.column() as usize)
         } else {
             0.
         };
         let end_x = if row == selection.end.row() {
-            line_layout.x_for_index(selection.end.column() as usize)
+            line_layout.caret_position_for_index(selection.end.column() as usize)
         } else {
             line_layout.width
         };
 
+        // On RTL/bidi rows the caret position of the selection start can be visually to
+        // the right of the end (logical order != visual order), which would make the
+        // rect width negative and the highlight vanish. Order the two x-values so we
+        // always draw one contiguous rect over the visual span. This is correct for
+        // pure-LTR and pure-RTL selections; a selection that mixes directions within a
+        // single line is only approximated (a fully correct version would emit one rect
+        // per bidi run, which the Line abstraction doesn't currently expose).
+        let (left_x, right_x) = (start_x.min(end_x), start_x.max(end_x));
+
         ctx.scene
             .draw_rect_with_hit_recording(RectF::new(
                 text_content_origin
-                    + vec2f(start_x, (row - first_visible_row) as f32 * line_height),
-                vec2f(end_x - start_x, line_height),
+                    + vec2f(left_x, (row - first_visible_row) as f32 * line_height),
+                vec2f(right_x - left_x, line_height),
             ))
             .with_background(color);
 
@@ -1052,6 +1061,10 @@ impl EditorElement {
 
                     let block_cursor_width = cursor_row_layout
                         .width_for_index(selection.end.column() as usize)
+                        // On RTL runs the next glyph sits to the left, so width_for_index
+                        // (next.x - this.x) is negative; take the magnitude so the block
+                        // cursor keeps the glyph's real advance instead of the fallback.
+                        .map(|value| value.abs())
                         .filter(|value| *value > 0.)
                         .unwrap_or(fallback_block_cursor_width);
 
@@ -1298,7 +1311,9 @@ impl EditorElement {
             if let Some(point) =
                 x_ray_display_point.filter(|point| point.row() == first_visible_row + ix as u32)
             {
-                let x = line.x_for_index(point.column() as usize);
+                // caret_position_for_index (not x_for_index) so the x-ray marker tracks
+                // the visual caret position on RTL/bidi rows. See the cursor-origin note.
+                let x = line.caret_position_for_index(point.column() as usize);
                 ctx.position_cache.cache_position_indefinitely(
                     self.x_ray_position_id(),
                     RectF::new(
@@ -2053,7 +2068,9 @@ impl Element for EditorElement {
                     content_origin
                 };
 
-                let x_offset = line.x_for_index(soft_wrap_point.column() as usize);
+                // caret_position_for_index (not x_for_index) so cached cursor points land
+                // at the visual caret position on RTL/bidi rows. See the cursor-origin note.
+                let x_offset = line.caret_position_for_index(soft_wrap_point.column() as usize);
                 let bounds = text_content_origin + vec2f(x_offset, y_offset);
 
                 ctx.position_cache.cache_position_indefinitely(
@@ -2355,7 +2372,10 @@ impl PaintState {
 
         let x = shifted_position.x() + (scroll_position.x() * view_snapshot.em_width);
 
-        let col = if let Some(col) = line.index_for_x(x).map(|ix| ix as u32) {
+        // caret_index_for_x (not index_for_x) is the caret-aware inverse: it walks
+        // caret_positions rather than raw glyph x-order, so clicking on RTL/bidi text
+        // (and ligatures) lands on the right character. Mirrors caret_position_for_index.
+        let col = if let Some(col) = line.caret_index_for_x(x).map(|ix| ix as u32) {
             col
         } else {
             // Clamp to the left or right if the x pos is before or after the buffer text, respectively.
