@@ -70,12 +70,16 @@ jobs:
         if: steps.rebase.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin the repo: with an `upstream` remote present, gh otherwise
+          # resolves API calls to the fork parent (warpdotdev/warp) and 404s.
+          GH_REPO: ${{ github.repository }}
         run: gh workflow run build-macos.yml --ref rtl-fix -f profile=release
 
       - name: Open issue on rebase conflict
         if: steps.rebase.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           body="$(cat <<'EOF'
           The weekly auto-sync could not rebase `rtl-fix` onto `upstream/master` cleanly and aborted without pushing. A manual rebase is needed:
