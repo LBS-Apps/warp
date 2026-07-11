@@ -1,0 +1,93 @@
+name: Auto-sync rtl-fix with upstream
+
+# Weekly: rebase the RTL fork branch onto the latest warpdotdev/warp master and,
+# if it moved, push and kick a fresh macOS build. On a rebase conflict it stops
+# and opens an issue instead of pushing anything, so a human can resolve it.
+#
+# A GITHUB_TOKEN push does not itself trigger other workflows, so we explicitly
+# dispatch build-macos.yml after a successful push.
+
+on:
+  schedule:
+    - cron: '17 9 * * 0' # Sundays 09:17 UTC
+  workflow_dispatch: # allow manual runs
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: auto-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rtl-fix (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: rtl-fix
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "warp-rtl-autosync[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/warpdotdev/warp.git
+          git fetch --no-tags upstream master
+
+      - name: Rebase onto upstream/master
+        id: rebase
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/master)
+          echo "Behind upstream/master by $BEHIND commit(s)."
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date."
+            exit 0
+          fi
+          if git rebase upstream/master; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Rebased $BEHIND upstream commit(s) cleanly."
+          else
+            git rebase --abort || true
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "Rebase hit a conflict; aborted."
+          fi
+
+      - name: Push rebased branch
+        if: steps.rebase.outputs.changed == 'true'
+        run: git push --force-with-lease origin rtl-fix
+
+      - name: Trigger macOS build
+        if: steps.rebase.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run build-macos.yml --ref rtl-fix -f profile=release
+
+      - name: Open issue on rebase conflict
+        if: steps.rebase.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body="$(cat <<'EOF'
+          The weekly auto-sync could not rebase `rtl-fix` onto `upstream/master` cleanly and aborted without pushing. A manual rebase is needed:
+
+          ```
+          cd ~/warp && git fetch upstream master && git rebase upstream/master
+          ```
+
+          Resolve the conflicts, then `git push --force-with-lease origin rtl-fix`.
+          EOF
+          )"
+          gh issue create \
+            --title "Auto-sync: rebase conflict with upstream" \
+            --body "$body" \
+            || echo "Issue creation failed (a conflict issue may already be open)."
