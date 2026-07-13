@@ -62,6 +62,23 @@ jobs:
             echo "Rebase hit a conflict; aborted."
           fi
 
+      - name: Strip upstream-only workflows
+        if: steps.rebase.outputs.changed == 'true'
+        run: |
+          # The fork runs only its own two workflows. Everything else the rebase
+          # pulls in from upstream is warpdotdev-internal ops automation that
+          # either parse-fails on the fork (job-level `uses:` a private reusable
+          # workflow like warpdotdev/oz-for-oss or warpdotdev/repo-sync) or
+          # no-ops behind an `if: repository_owner == 'warpdotdev'` guard — pure
+          # CI-failure-email noise. Strip them so a freshly-added upstream
+          # workflow can't start spamming after a sync.
+          find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) \
+            ! -name auto-sync-upstream.yml ! -name build-macos.yml -delete
+          if ! git diff --quiet; then
+            git add -A .github/workflows
+            git commit -m "chore(ci): strip upstream-only workflows from the fork [skip ci]"
+          fi
+
       - name: Push rebased branch
         if: steps.rebase.outputs.changed == 'true'
         run: git push --force-with-lease origin rtl-fix
