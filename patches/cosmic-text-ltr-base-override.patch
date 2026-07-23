@@ -1,0 +1,106 @@
+From 899e699dcc9c393b17ee5687a352d595280f053c Mon Sep 17 00:00:00 2001
+From: Moshe1010 <5092386+Moshe1010@users.noreply.github.com>
+Date: Fri, 10 Jul 2026 13:04:00 +0300
+Subject: [PATCH] Add ShapeLine base-direction override for terminal LTR grids
+
+ShapeLine::new always calls BidiInfo::new(line, None), auto-detecting the
+paragraph base direction from the first strong character (Unicode Bidi P2/P3).
+In a terminal grid that flips the whole line to RTL base when the first word is
+Hebrew/Arabic, scrambling the visual order of LTR tokens and the prompt.
+
+Add new_with_base_direction / new_in_buffer_with_base that thread an explicit
+Option<unicode_bidi::Level> into BidiInfo::new, so a caller can force LTR base
+(Level::ltr()) while RTL runs still shape and reorder within the line. Existing
+new / new_in_buffer delegate with None, preserving current behaviour.
+---
+ src/lib.rs   |  5 +++++
+ src/shape.rs | 50 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 54 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 0efcc8eb729..16a3c02df53 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -129,6 +129,11 @@ mod line_ending;
+ pub use self::shape::*;
+ mod shape;
+ 
++// Re-exported so callers of `ShapeLine::new_with_base_direction` can name the
++// paragraph base level without depending on `unicode-bidi` directly (and risking
++// a version mismatch with the one this crate uses).
++pub use unicode_bidi::Level;
++
+ use self::shape_plan_cache::*;
+ mod shape_plan_cache;
+ 
+diff --git a/src/shape.rs b/src/shape.rs
+index 2e79cfb50d6..ddafe698ffc 100644
+--- a/src/shape.rs
++++ b/src/shape.rs
+@@ -783,6 +783,32 @@ impl ShapeLine {
+         )
+     }
+ 
++    /// Like [`Self::new`], but forces the paragraph base direction (the bidi
++    /// embedding level) instead of auto-detecting it from the first strong
++    /// character. Passing `Some(unicode_bidi::Level::ltr())` keeps the line
++    /// left-to-right overall while still shaping and reordering RTL runs within
++    /// it — the behaviour a terminal grid wants, where cell 0 is always on the
++    /// left regardless of whether the first word is Hebrew/Arabic. `None`
++    /// preserves the default auto-detection.
++    pub fn new_with_base_direction(
++        font_system: &mut FontSystem,
++        line: &str,
++        attrs_list: &AttrsList,
++        shaping: Shaping,
++        tab_width: u16,
++        base_level: Option<unicode_bidi::Level>,
++    ) -> Self {
++        Self::new_in_buffer_with_base(
++            &mut ShapeBuffer::default(),
++            font_system,
++            line,
++            attrs_list,
++            shaping,
++            tab_width,
++            base_level,
++        )
++    }
++
+     /// Shape a line into a set of spans, using a scratch buffer. If [`unicode_bidi::BidiInfo`]
+     /// detects multiple paragraphs, they will be joined.
+     ///
+@@ -796,10 +822,32 @@ impl ShapeLine {
+         attrs_list: &AttrsList,
+         shaping: Shaping,
+         tab_width: u16,
++    ) -> Self {
++        Self::new_in_buffer_with_base(
++            scratch,
++            font_system,
++            line,
++            attrs_list,
++            shaping,
++            tab_width,
++            None,
++        )
++    }
++
++    /// Same as [`Self::new_in_buffer`], but with an explicit paragraph base
++    /// direction. See [`Self::new_with_base_direction`].
++    pub fn new_in_buffer_with_base(
++        scratch: &mut ShapeBuffer,
++        font_system: &mut FontSystem,
++        line: &str,
++        attrs_list: &AttrsList,
++        shaping: Shaping,
++        tab_width: u16,
++        base_level: Option<unicode_bidi::Level>,
+     ) -> Self {
+         let mut spans = Vec::new();
+ 
+-        let bidi = unicode_bidi::BidiInfo::new(line, None);
++        let bidi = unicode_bidi::BidiInfo::new(line, base_level);
+         let rtl = if bidi.paragraphs.is_empty() {
+             false
+         } else {
