@@ -55,12 +55,39 @@ jobs:
           if git rebase upstream/master; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Rebased $BEHIND upstream commit(s) cleanly."
-          else
+            exit 0
+          fi
+
+          # The fork deletes every upstream-only workflow, so any upstream edit to
+          # one of those files comes back as a modify/delete conflict. That class is
+          # mechanically decidable — the fork wants them gone — so resolve it here
+          # and keep going. Anything else is a real conflict and needs a human.
+          while true; do
+            CONFLICTED=$(git diff --name-only --diff-filter=U)
+            [ -z "$CONFLICTED" ] && break
+            OTHER=$(echo "$CONFLICTED" | grep -v '^\.github/workflows/' || true)
+            if [ -n "$OTHER" ]; then
+              echo "Non-workflow conflict(s):"; echo "$OTHER"
+              git rebase --abort || true
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "$CONFLICTED" | xargs git rm -q --
+            if ! GIT_EDITOR=true git rebase --continue; then
+              continue
+            fi
+            break
+          done
+
+          if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
             git rebase --abort || true
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "conflict=true" >> "$GITHUB_OUTPUT"
-            echo "Rebase hit a conflict; aborted."
+            exit 0
           fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "Rebased $BEHIND upstream commit(s) (upstream-only workflow deletions auto-resolved)."
 
       - name: Strip upstream-only workflows
         if: steps.rebase.outputs.changed == 'true'
@@ -111,4 +138,8 @@ jobs:
           gh issue create \
             --title "Auto-sync: rebase conflict with upstream" \
             --body "$body" \
-            || echo "Issue creation failed (a conflict issue may already be open)."
+            || echo "Issue creation failed (issues may be disabled on this repo)."
+          # Fail the job regardless: issues are currently disabled on the fork, so a
+          # green run on conflict means the sync silently stops and nobody is told.
+          # A red run is the only reliable notification channel here.
+          exit 1
