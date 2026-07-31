@@ -110,14 +110,26 @@ jobs:
         if: steps.rebase.outputs.changed == 'true'
         run: git push --force-with-lease origin rtl-fix
 
-      - name: Trigger macOS build
+      - name: Note that a build is available
         if: steps.rebase.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pin the repo: with an `upstream` remote present, gh otherwise
-          # resolves API calls to the fork parent (warpdotdev/warp) and 404s.
-          GH_REPO: ${{ github.repository }}
-        run: gh workflow run build-macos.yml --ref rtl-fix -f profile=release
+        run: |
+          # Deliberately NOT dispatching build-macos.yml. A release build takes
+          # ~140 macOS minutes, and macOS bills at 10x, so one build costs ~1,400
+          # of the account's 2,000 free minutes/month. Six auto-builds in July
+          # 2026 burned 7,023 minute-equivalents and took CI down account-wide
+          # for three weeks. Syncing is cheap; building is not — so the branch
+          # is kept current automatically and the app is built on request.
+          {
+            echo "### rtl-fix synced with upstream"
+            echo
+            echo "No macOS build was started (a release build costs ~1,400 of the"
+            echo "2,000 free minute-equivalents/month)."
+            echo
+            echo "Build it when you actually want a new app:"
+            echo '```'
+            echo "gh workflow run build-macos.yml --repo ${{ github.repository }} --ref rtl-fix -f profile=release"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open issue on rebase conflict
         if: steps.rebase.outputs.conflict == 'true'

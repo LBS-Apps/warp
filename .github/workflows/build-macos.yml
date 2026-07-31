@@ -5,11 +5,12 @@ name: Build macOS (RTL fork)
 # Uses the public `oss` channel (no Sentry / no internal agent-debug features) so the
 # build is fully self-contained and needs no Warp-internal secrets or Apple Developer cert.
 
+# Dispatch-only, on purpose. This job runs on a macOS runner, which bills at
+# 10x, and a release build takes ~140 minutes — roughly 1,400 of the account's
+# 2,000 free minute-equivalents per month. Building on every push to rtl-fix
+# consumed 7,023 equivalents in July 2026 and blocked Actions across every
+# private repo on the account for three weeks. Build when you want an app.
 on:
-  push:
-    branches: [rtl-fix]
-    paths-ignore:
-      - '**/*.md'
   workflow_dispatch:
     inputs:
       profile:
