@@ -67,12 +67,24 @@ echo "Building ${PROFILE} bundle on AC power, ${FREE_GB}GB free..."
 START=$(date +%s)
 
 # caffeinate: a sleeping laptop mid-link wastes the whole build.
-caffeinate -i ./script/bundle --selfsign --arch aarch64 -c oss $EXTRA
+# The bundle script always finishes by building a .dmg via create-dmg, which fails
+# on some macOS versions ("interstitial disk image was not found") long after the
+# .app itself is built and signed. We ship the .app, so judge success by whether
+# the bundle exists rather than by the script's exit code.
+caffeinate -i ./script/bundle --selfsign --arch aarch64 -c oss $EXTRA || BUNDLE_RC=$?
 
 APP="$(find target -type d -path '*bundle/osx*' -name '*.app' | head -1)"
 if [ -z "$APP" ]; then
-  echo "Build finished but produced no .app under target/**/bundle/osx" >&2
+  echo "Build failed (bundle exit ${BUNDLE_RC:-0}) and produced no .app under target/**/bundle/osx" >&2
   exit 1
+fi
+if [ -n "${BUNDLE_RC:-}" ]; then
+  echo "Note: bundle script exited ${BUNDLE_RC} (usually the .dmg step); the .app was produced."
+  # create-dmg leaves its read/write image mounted when it fails partway.
+  for dev in $(hdiutil info | awk '/rw\..*\.dmg/{found=1} found && /^\/dev\/disk[0-9]+\t/{print $1; exit}'); do
+    hdiutil detach "$dev" -force >/dev/null 2>&1 || true
+  done
+  rm -f target/*/release-lto/bundle/osx/dmg/*/rw.*.dmg 2>/dev/null || true
 fi
 
 MINS=$(( ($(date +%s) - START) / 60 ))
