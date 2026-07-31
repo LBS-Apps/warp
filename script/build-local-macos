@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Build WarpOss.app locally instead of on GitHub Actions.
+#
+# Why this exists: this fork's macOS CI build takes 68-103 minutes on a
+# GitHub-hosted runner, and macOS runners bill at 10x, so a single build costs
+# 680-1030 of a free account's 2000 monthly minute-equivalents. Six builds in
+# July 2026 consumed 7030 and blocked Actions across every private repo on the
+# account for three weeks. Building here costs nothing.
+#
+# Usage:
+#   script/build-local-macos            # release-lto build (slow, shippable)
+#   script/build-local-macos --dev      # debug build (fast, for iterating)
+#
+# Refuses to start on battery: a full build pins every core for the better part
+# of an hour, which drains a laptop battery faster than it can finish.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+PROFILE="release"
+EXTRA=""
+if [ "${1:-}" = "--dev" ]; then
+  PROFILE="dev"
+  EXTRA="--debug"
+fi
+
+# --- power gate -------------------------------------------------------------
+if ! pmset -g batt | grep -q "AC Power"; then
+  PCT="$(pmset -g batt | grep -oE '[0-9]+%' | head -1)"
+  echo "Refusing to build on battery power (currently ${PCT:-unknown})." >&2
+  echo "A ${PROFILE} build pins all cores for up to an hour. Plug in and rerun." >&2
+  exit 1
+fi
+
+# --- disk gate --------------------------------------------------------------
+# A release-lto target/ for this workspace runs tens of GB.
+FREE_GB="$(df -g "$REPO_ROOT" | awk 'NR==2 {print $4}')"
+MIN_GB=40
+if [ "$FREE_GB" -lt "$MIN_GB" ]; then
+  echo "Only ${FREE_GB}GB free on this volume; a ${PROFILE} build needs ~${MIN_GB}GB." >&2
+  echo "Free some space, or run: cargo clean" >&2
+  exit 1
+fi
+
+# --- build deps -------------------------------------------------------------
+# protoc: the workspace compiles .proto files via prost-build.
+# create-dmg: script/macos/bundle calls it unconditionally; the bundle step
+#             exits 127 without it, even though we only keep the .app.
+for dep in protoc create-dmg; do
+  command -v "$dep" >/dev/null || { echo "Missing $dep. Install: brew install protobuf create-dmg" >&2; exit 1; }
+done
+command -v cargo-bundle >/dev/null || ./script/install_cargo_bundle
+cargo about --version >/dev/null 2>&1 || cargo install --locked cargo-about@0.8.4
+
+echo "Building ${PROFILE} bundle on AC power, ${FREE_GB}GB free..."
+START=$(date +%s)
+
+# caffeinate: a sleeping laptop mid-link wastes the whole build.
+caffeinate -i ./script/bundle --selfsign --arch aarch64 -c oss $EXTRA
+
+APP="$(find target -type d -path '*bundle/osx*' -name '*.app' | head -1)"
+if [ -z "$APP" ]; then
+  echo "Build finished but produced no .app under target/**/bundle/osx" >&2
+  exit 1
+fi
+
+MINS=$(( ($(date +%s) - START) / 60 ))
+echo
+echo "Built in ${MINS}m: $APP"
+echo "Install it with:  ditto \"$APP\" /Applications/\$(basename \"$APP\")"
