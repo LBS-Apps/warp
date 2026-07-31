@@ -1062,3 +1062,70 @@ fn test_transfer_view_tree_reconciles_views_known_only_to_target_presenter() {
         });
     });
 }
+
+/// A stream spawned via `ViewContext::spawn_stream_local` captures the window the view
+/// lived in at spawn time. Dragging a tab into its own window moves the view but leaves
+/// every already-spawned task pointing at the old window, so items stopped reaching the
+/// view: in Warp this showed up as a moved terminal pane that no longer received its own
+/// wakeups and only repainted when some unrelated event forced a draw.
+#[test]
+fn test_spawned_stream_reaches_view_after_transfer_to_another_window() {
+    #[derive(Default)]
+    struct TestView {
+        items: Vec<Option<usize>>,
+    }
+
+    impl Entity for TestView {
+        type Event = ();
+    }
+
+    impl View for TestView {
+        fn render(&self, _: &AppContext) -> Box<dyn Element> {
+            Empty::new().finish()
+        }
+
+        fn ui_name() -> &'static str {
+            "TestView"
+        }
+    }
+
+    impl TypedActionView for TestView {
+        type Action = ();
+    }
+
+    App::test((), |mut app| async move {
+        let (window_1_id, _) = app.add_window(WindowStyle::NotStealFocus, |_| TestView::default());
+        let (window_2_id, _) = app.add_window(WindowStyle::NotStealFocus, |_| TestView::default());
+
+        let view = app.add_view(window_1_id, |_| TestView::default());
+        let view_id = view.id();
+
+        let (tx, rx) = async_channel::unbounded::<usize>();
+        let stream_done = view.update(&mut app, |_, ctx| {
+            ctx.spawn_stream_local(
+                rx,
+                |me, item, _| me.items.push(Some(item)),
+                |me, _| me.items.push(None),
+            )
+            .into_future()
+        });
+
+        tx.send(1).await.unwrap();
+
+        let transferred =
+            app.update(|ctx| ctx.transfer_view_to_window(view_id, window_1_id, window_2_id));
+        assert!(transferred, "transfer should succeed");
+
+        tx.send(2).await.unwrap();
+        tx.close();
+        stream_done.await;
+
+        view.read(&app, |view, _| {
+            assert_eq!(
+                view.items,
+                [Some(1), Some(2), None],
+                "items sent after the view moved windows must still reach it"
+            );
+        });
+    });
+}
