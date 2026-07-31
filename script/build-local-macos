@@ -54,6 +54,15 @@ done
 command -v cargo-bundle >/dev/null || ./script/install_cargo_bundle
 cargo about --version >/dev/null 2>&1 || cargo install --locked cargo-about@0.8.4
 
+# Metal shaders: warpui's build.rs compiles shaders.metal to .air, which needs the
+# Metal Toolchain. GitHub's macos runner images ship it; a local Xcode does not, and
+# the build gets most of the way through before failing on it. `xcrun -f metal` finds
+# the driver binary even when the toolchain is absent, so probe by compiling.
+if ! echo 'kernel void t() {}' | xcrun metal -x metal -c - -o /dev/null 2>/dev/null; then
+  echo "Metal Toolchain missing - downloading (~690MB, one time)..."
+  xcodebuild -downloadComponent MetalToolchain
+fi
+
 echo "Building ${PROFILE} bundle on AC power, ${FREE_GB}GB free..."
 START=$(date +%s)
 
