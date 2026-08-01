@@ -7,16 +7,21 @@
 # July 2026 consumed 7030 and blocked Actions across every private repo on the
 # account for three weeks. Building here costs nothing.
 #
-# Usage:
+# Usage (runnable from any directory, by absolute path or relative):
 #   script/build-local-macos            # release-lto build (slow, shippable)
 #   script/build-local-macos --dev      # debug build (fast, for iterating)
+#   ~/warp/script/build-local-macos     # from anywhere
 #
 # Refuses to start on battery: a full build pins every core for the better part
 # of an hour, which drains a laptop battery faster than it can finish.
 
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Resolve the repo from THIS SCRIPT's own location, not the caller's cwd.
+# `git rev-parse --show-toplevel` reads $PWD, so invoking the script by absolute
+# path from anywhere outside the repo died with "fatal: not a git repository"
+# before it did anything at all.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 PROFILE="release"
