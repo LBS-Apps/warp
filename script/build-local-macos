@@ -26,9 +26,15 @@ cd "$REPO_ROOT"
 
 PROFILE="release"
 EXTRA=""
+# cargo-bundle writes under the CARGO PROFILE DIRECTORY, which is not the same
+# string as the profile flag: --debug lands in `debug`, the default lands in
+# `release-lto`. Track it so the bundle is located by construction below rather
+# than by searching.
+PROFILE_DIR="release-lto"
 if [ "${1:-}" = "--dev" ]; then
   PROFILE="dev"
   EXTRA="--debug"
+  PROFILE_DIR="debug"
 fi
 
 # --- power gate -------------------------------------------------------------
@@ -78,7 +84,13 @@ START=$(date +%s)
 # the bundle exists rather than by the script's exit code.
 caffeinate -i ./script/bundle --selfsign --arch aarch64 -c oss $EXTRA || BUNDLE_RC=$?
 
-APP="$(find target -type d -path '*bundle/osx*' -name '*.app' | head -1)"
+# Scope the search to the profile we just built. A bare `find target ... | head -1`
+# also matches stale bundles from OTHER profiles — a leftover
+# target/debug/bundle/osx/WarpOss.app in particular — and find's traversal order is
+# filesystem-dependent, not sorted. Picking the wrong one silently stamps
+# BUILD_COMMIT into a stale debug bundle and prints an install command for it, so a
+# `ditto` of "the build you just made" would put a debug app in /Applications.
+APP="$(find target -type d -path "*/${PROFILE_DIR}/bundle/osx/*" -name '*.app' | head -1)"
 if [ -z "$APP" ]; then
   echo "Build failed (bundle exit ${BUNDLE_RC:-0}) and produced no .app under target/**/bundle/osx" >&2
   exit 1
