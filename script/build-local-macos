@@ -87,6 +87,11 @@ if [ -n "${BUNDLE_RC:-}" ]; then
   rm -f target/*/release-lto/bundle/osx/dmg/*/rw.*.dmg 2>/dev/null || true
 fi
 
+# Stamp provenance into the bundle. The auto-updater compares this against the
+# commit behind the newest CI artifact so it can pick the newer of the two and,
+# more importantly, never replace a local build with an older CI one.
+git rev-parse HEAD > "$APP/Contents/Resources/BUILD_COMMIT"
+
 MINS=$(( ($(date +%s) - START) / 60 ))
 echo
 echo "Built in ${MINS}m: $APP"
