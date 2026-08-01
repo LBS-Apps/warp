@@ -1,7 +1,6 @@
 name: Build macOS (RTL fork)
 
 # Builds a self-signed WarpOss.app carrying the RTL patch, for personal use.
-# Runs on every push to rtl-fix (i.e. after each upstream resync) and on manual dispatch.
 # Uses the public `oss` channel (no Sentry / no internal agent-debug features) so the
 # build is fully self-contained and needs no Warp-internal secrets or Apple Developer cert.
 
@@ -34,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Show toolchain
         run: |
@@ -51,7 +50,7 @@ jobs:
             "https://github.com/"
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
         with:
           # Bust cache when Cargo.lock changes; share across profiles.
           shared-key: warp-macos-rtl
@@ -120,7 +119,7 @@ jobs:
           ls -lh WarpOss-rtl-arm64.zip
 
       - name: Upload app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: WarpOss-rtl-arm64
           path: WarpOss-rtl-arm64.zip
