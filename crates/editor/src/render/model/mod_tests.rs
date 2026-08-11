@@ -1157,16 +1157,19 @@ fn make_test_cell_layout() -> CellLayout {
         line_caret_positions: vec![vec![
             warpui_core::text_layout::CaretPosition {
                 position_in_line: 0.0,
+                trailing_position_in_line: 10.0,
                 start_offset: 0,
                 last_offset: 0,
             },
             warpui_core::text_layout::CaretPosition {
                 position_in_line: 10.0,
+                trailing_position_in_line: 20.0,
                 start_offset: 1,
                 last_offset: 1,
             },
             warpui_core::text_layout::CaretPosition {
                 position_in_line: 20.0,
+                trailing_position_in_line: 30.0,
                 start_offset: 2,
                 last_offset: 2,
             },
