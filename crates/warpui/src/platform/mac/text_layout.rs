@@ -1021,16 +1021,19 @@ fn caret_positions_for_line(
             // Core Text enumerates edges in left-to-right visual order, but
             // sets the leading edge based on logical order, so use that to
             // handle RTL text.
-            // For any given leading/trailing edge pair, the pixel offset from
-            // the start of the line is the one for the leading edge.
-            let pixel_offset = if first.leading_edge {
-                first.pixel_offset
+            // We keep both edges: the leading one positions the caret for this
+            // grapheme, and the trailing one positions the caret for the index
+            // after it. For RTL text the trailing edge is to the *left* of the
+            // leading one, and at the visual end of an RTL run it is the only
+            // record of that caret position.
+            let (pixel_offset, trailing_pixel_offset) = if first.leading_edge {
+                (first.pixel_offset, second.pixel_offset)
             } else {
                 debug_assert!(
                     second.leading_edge,
                     "No leading edge in {first:?} or {second:?}"
                 );
-                second.pixel_offset
+                (second.pixel_offset, first.pixel_offset)
             };
 
             let first_index = utf16_offset_to_char_idx
@@ -1050,6 +1053,7 @@ fn caret_positions_for_line(
 
             CaretPosition {
                 position_in_line: pixel_offset as f32,
+                trailing_position_in_line: trailing_pixel_offset as f32,
                 start_offset: start,
                 last_offset: end,
             }
