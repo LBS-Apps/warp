@@ -551,19 +551,28 @@ fn paint_selection(
                 let line_y = layout.line_y_offsets.get(line_idx).copied().unwrap_or(0.0);
                 let line_height = layout.line_heights.get(line_idx).copied().unwrap_or(20.0);
 
-                let line_start_x = if line_idx == start_line {
+                let line_width = layout.line_widths.get(line_idx).copied().unwrap_or(0.0);
+
+                let selection_start_x = if line_idx == start_line {
                     layout.x_for_char_in_line(line_idx, sel_start_in_cell)
                 } else {
                     0.0
                 };
 
-                let line_end_x = if line_idx == end_line {
+                // Lines in the middle of the selection are covered end to end, so
+                // take the width directly rather than the x of the last character:
+                // on an RTL line that character is drawn at the *left*.
+                let selection_end_x = if line_idx == end_line {
                     layout.x_for_char_in_line(line_idx, sel_end_in_cell)
                 } else {
-                    let range = layout.line_char_ranges.get(line_idx);
-                    layout
-                        .x_for_char_in_line(line_idx, range.map(|r| r.end.as_usize()).unwrap_or(0))
+                    line_width
                 };
+
+                // The logical start of a selection is visually to the right of its
+                // end on RTL text, which would otherwise give the rect a negative
+                // width and paint nothing.
+                let line_start_x = selection_start_x.min(selection_end_x);
+                let line_end_x = selection_start_x.max(selection_end_x);
 
                 let sel_rect = RectF::new(
                     vec2f(
