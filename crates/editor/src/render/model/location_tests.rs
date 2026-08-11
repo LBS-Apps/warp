@@ -44,16 +44,19 @@ fn test_table_layout() -> LaidOutTable {
         line_caret_positions: vec![vec![
             CaretPosition {
                 position_in_line: 0.0,
+                trailing_position_in_line: 10.0,
                 start_offset: 0,
                 last_offset: 0,
             },
             CaretPosition {
                 position_in_line: 10.0,
+                trailing_position_in_line: 20.0,
                 start_offset: 1,
                 last_offset: 1,
             },
             CaretPosition {
                 position_in_line: 20.0,
+                trailing_position_in_line: 30.0,
                 start_offset: 2,
                 last_offset: 2,
             },

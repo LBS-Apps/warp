@@ -2378,15 +2378,15 @@ impl PaintState {
         let col = if let Some(col) = line.caret_index_for_x(x).map(|ix| ix as u32) {
             col
         } else {
-            // Clamp to the left or right if the x pos is before or after the buffer text, respectively.
+            // Clamp to the left or right if the x pos is before or after the buffer text,
+            // respectively. Which character index sits at either edge depends on the
+            // direction of the text there, so ask the line rather than assuming that the
+            // rightmost glyph is the last one.
             is_clamped = true;
             if x >= 0. {
-                // If the line has no glyphs, the index is zero. Otherwise, we take one more index
-                // beyond the last start index in the line to get the last position.
-                line.last_glyph()
-                    .map_or(0, |glyph| (glyph.index + 1) as u32)
+                line.index_at_right_edge() as u32
             } else {
-                0
+                line.index_at_left_edge() as u32
             }
         };
         // Now convert from SoftWrapPoint to DisplayPoint.
