@@ -4,7 +4,6 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
-use itertools::Itertools;
 use ordered_float::OrderedFloat;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use pathfinder_color::ColorU;
@@ -548,7 +547,19 @@ pub fn default_compute_baseline_position_fn() -> ComputeBaselinePositionFn {
 #[derive(Debug, Default, Clone)]
 pub struct CaretPosition {
     /// The x-position of this caret location, relative to the line's origin.
+    /// This is the grapheme's _leading_ edge: its left edge in LTR text, and its
+    /// right edge in RTL text.
     pub position_in_line: f32,
+    /// The x-position of the caret location one index _past_ this one (that is,
+    /// for `last_offset + 1`), relative to the line's origin. This is the
+    /// grapheme's _trailing_ edge: its right edge in LTR text, and its left edge
+    /// in RTL text.
+    ///
+    /// Within a run this coincides with the next grapheme's `position_in_line`,
+    /// but at the visual end of an RTL run it is the only record of that
+    /// boundary, so hit-testing must consider it to be able to reach the index
+    /// after the run.
+    pub trailing_position_in_line: f32,
     /// The starting character index corresponding to this location in the input string.
     /// In the case of RTL text, this may not correspond to `position_in_line`.
     /// That is, a caret position that's visually to the right of another may
@@ -818,6 +829,7 @@ impl TextFrame {
         let caret_positions = (0..char_count)
             .map(|index| CaretPosition {
                 position_in_line: index as f32 * advance,
+                trailing_position_in_line: (index + 1) as f32 * advance,
                 start_offset: index,
                 last_offset: index,
             })
@@ -968,6 +980,7 @@ impl Line {
             clip_config: None,
             caret_positions: vec![CaretPosition {
                 position_in_line: 0.0,
+                trailing_position_in_line: 0.0,
                 start_offset: glyph_index,
                 last_offset: glyph_index,
             }],
@@ -1071,14 +1084,25 @@ impl Line {
             }
         }
 
+        // The index right after the line's last character has no caret of its
+        // own, but it is the trailing edge of the one before it. That edge is
+        // only worth consulting for RTL text, where it sits at the *left* of the
+        // grapheme rather than at the line's right edge; taking it for LTR text
+        // too would move the end-of-line caret off `self.width` by the last
+        // glyph's trailing whitespace.
+        if let Some(caret) = self
+            .caret_positions
+            .iter()
+            .find(|caret| caret.last_offset + 1 == index)
+            && caret.trailing_position_in_line < caret.position_in_line
+        {
+            return caret.trailing_position_in_line;
+        }
+
         // If `index` is out of bounds or at the extremes of the line, clamp to
         // either 0 or the line width. Which we choose depends on whether `index`
         // is before or after the line's range.
-        if self
-            .caret_positions
-            .first()
-            .is_some_and(|caret| index < caret.start_offset)
-        {
+        if index < self.first_index() {
             0.
         } else {
             self.width
@@ -1106,17 +1130,38 @@ impl Line {
         }
     }
 
+    /// The caret index at the left edge of the line. This is the first index for
+    /// LTR text, but the index past the last character when the line starts
+    /// (visually) with RTL text.
+    pub fn index_at_left_edge(&self) -> usize {
+        self.caret_positions
+            .iter()
+            .min_by_key(|caret| OrderedFloat(caret.visual_bounds().0))
+            .map_or(0, |caret| caret.index_at_left_edge())
+    }
+
+    /// The caret index at the right edge of the line. This is the index past the
+    /// last character for LTR text, but the first index when the line ends
+    /// (visually) with RTL text.
+    pub fn index_at_right_edge(&self) -> usize {
+        self.caret_positions
+            .iter()
+            .max_by_key(|caret| OrderedFloat(caret.visual_bounds().1))
+            .map_or(0, |caret| caret.index_at_right_edge())
+    }
+
     /// Returns the caret index closest to the (relative) `x` position,
-    /// but returns the first or end index if the `x` position is out of bounds.
+    /// but returns the index at the line's left or right edge if the `x` position
+    /// is out of bounds.
     pub fn caret_index_for_x_unbounded(&self, x: f32) -> usize {
         let max_line_x = self.x_for_index(self.end_index());
 
         if !self.is_x_in_bound(x) {
             // max_line_x should be smaller than self.width, but we check both just in case.
             return if x >= max_line_x || x >= self.width {
-                self.end_index()
+                self.index_at_right_edge()
             } else {
-                self.first_index()
+                self.index_at_left_edge()
             };
         }
 
@@ -1141,47 +1186,97 @@ impl Line {
             .expect("None conditions should be already checked & handled")
     }
 
-    /// Returns the starting character index for the caret position best corresponding to `x`.
+    /// Returns the character index for the caret position best corresponding to `x`.
     /// Returns `None` if `x` is out of bounds.
-    /// Max return value is `self.last_index()` (`self.end_index() - 1`).
+    ///
+    /// The index past the end of the line is only returned when it does not sit at
+    /// the line's right edge, which happens when the line ends (visually) in the
+    /// middle because its last characters are RTL. The right-edge case belongs to
+    /// [`Self::caret_index_for_x_unbounded`], so for LTR text the max return value
+    /// is still `self.last_index()` (`self.end_index() - 1`).
     ///
     /// *Important*: if you change the condition for returning `None`, make sure to update the
     /// checks in `caret_index_for_x_unbounded` as well.
     pub fn caret_index_for_x(&self, x: f32) -> Option<usize> {
         if !self.is_x_in_bound(x) {
-            None
-        } else {
-            // Iterate backwards through the list of caret positions, and bias to the start of the
-            // line if the search fails. Equivalently, we could iterate forwards and bias to the
-            // end of the line.
-            for (right, left) in self.caret_positions.iter().rev().tuple_windows() {
-                // We want to find the two caret positions adjacent to x, and then chose the closest.
-                // This is the first window from the back where the left caret position starts before x.
-                if left.position_in_line <= x {
-                    if (left.position_in_line - x).abs() < (right.position_in_line - x).abs() {
-                        return Some(left.start_offset);
-                    } else {
-                        return Some(right.start_offset);
-                    }
-                }
-            }
+            return None;
+        }
 
-            Some(0)
+        // Each caret spans one grapheme, bounded by its leading edge - the caret
+        // for its own `start_offset` - and its trailing edge, the caret for the
+        // index after it. Find the grapheme `x` falls on, then take whichever of
+        // its two edges is closer.
+        //
+        // Resolving within a grapheme, rather than against the line's boundaries
+        // as a whole, matters where an LTR and an RTL run meet: there, two
+        // different indices sit at the same x (the end of one run and the end of
+        // the other), and only the one belonging to the grapheme under the cursor
+        // keeps clicking and dragging pointed at what's actually under the mouse.
+        let Some(caret) = self.caret_positions.iter().min_by_key(|caret| {
+            let (left, right) = caret.visual_bounds();
+            OrderedFloat(if x < left {
+                left - x
+            } else if x > right {
+                x - right
+            } else {
+                0.
+            })
+        }) else {
+            return Some(0);
+        };
+
+        // A trailing edge past every other caret is the end of the line rather
+        // than a boundary between two characters. This method deliberately never
+        // returns that index; the case belongs to `caret_index_for_x_unbounded`.
+        // Note that this is only ever true of LTR text: an RTL grapheme's trailing
+        // edge is to its left, so the rightmost caret in the line is a leading one.
+        let is_end_of_line = caret.trailing_position_in_line > self.rightmost_caret_position();
+
+        // Exactly between the two edges counts as past the leading one, so that a
+        // click on the midpoint of a character rounds towards the next index.
+        let is_past_leading_edge = (x - caret.position_in_line).abs()
+            >= (x - caret.trailing_position_in_line).abs()
+            && !is_end_of_line;
+
+        if is_past_leading_edge {
+            Some(caret.last_offset + 1)
+        } else {
+            Some(caret.start_offset)
         }
     }
 
+    /// The x-position of the caret that sits furthest to the right in the line.
+    fn rightmost_caret_position(&self) -> f32 {
+        self.caret_positions
+            .iter()
+            .map(|caret| OrderedFloat(caret.position_in_line))
+            .max()
+            .map_or(f32::MAX, |max| max.0)
+    }
+
     /// The first character index that's within this line.
+    ///
+    /// Caret positions are stored in visual order, which is not the order of the
+    /// characters themselves once the line contains RTL text, so this is the
+    /// smallest offset rather than the first one.
     pub fn first_index(&self) -> usize {
         self.caret_positions
-            .first()
-            .map_or(0, |caret| caret.start_offset)
+            .iter()
+            .map(|caret| caret.start_offset)
+            .min()
+            .unwrap_or(0)
     }
 
     /// The last character index that's within this line (inclusive).
+    ///
+    /// As with [`Self::first_index`], this is the largest offset and not the
+    /// offset of the visually-last caret.
     pub fn last_index(&self) -> usize {
         self.caret_positions
-            .last()
-            .map_or(0, |caret| caret.last_offset)
+            .iter()
+            .map(|caret| caret.last_offset)
+            .max()
+            .unwrap_or(0)
     }
 
     /// The first character index that's after this line.
@@ -1670,6 +1765,43 @@ impl CaretPosition {
     /// Whether or not a given character offset is within this caret position.
     pub fn contains_index(&self, index: usize) -> bool {
         index >= self.start_offset && index <= self.last_offset
+    }
+
+    /// The horizontal span this caret position occupies, as (left, right). The
+    /// leading edge is the left one for LTR text and the right one for RTL text,
+    /// so this orders the two edges rather than assuming either.
+    pub fn visual_bounds(&self) -> (f32, f32) {
+        if self.position_in_line <= self.trailing_position_in_line {
+            (self.position_in_line, self.trailing_position_in_line)
+        } else {
+            (self.trailing_position_in_line, self.position_in_line)
+        }
+    }
+
+    /// Whether this caret position's characters run right to left, which puts its
+    /// leading edge to the right of its trailing one.
+    pub fn is_rtl(&self) -> bool {
+        self.trailing_position_in_line < self.position_in_line
+    }
+
+    /// The caret index at this position's left edge: the character it starts with
+    /// for LTR text, and the one after it for RTL text.
+    pub fn index_at_left_edge(&self) -> usize {
+        if self.is_rtl() {
+            self.last_offset + 1
+        } else {
+            self.start_offset
+        }
+    }
+
+    /// The caret index at this position's right edge: the character after it for
+    /// LTR text, and the one it starts with for RTL text.
+    pub fn index_at_right_edge(&self) -> usize {
+        if self.is_rtl() {
+            self.start_offset
+        } else {
+            self.last_offset + 1
+        }
     }
 }
 
