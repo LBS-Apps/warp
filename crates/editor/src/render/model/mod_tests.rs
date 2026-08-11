@@ -1230,6 +1230,117 @@ fn test_char_at_x_in_line_near_line_end_maps_to_end_offset() {
     assert_eq!(layout.char_at_x_in_line(0, 25.0), CharOffset::from(3));
 }
 
+/// A cell holding three RTL characters of width 10. Character 0 is drawn
+/// rightmost, so every caret's leading edge (`position_in_line`) is to the right
+/// of its trailing one.
+#[allow(clippy::single_range_in_vec_init)]
+fn make_rtl_test_cell_layout() -> CellLayout {
+    CellLayout {
+        line_heights: vec![20.0],
+        line_y_offsets: vec![0.0],
+        line_char_ranges: vec![CharOffset::from(0)..CharOffset::from(3)],
+        line_widths: vec![30.0],
+        line_caret_positions: vec![(0..3)
+            .map(|index| warpui_core::text_layout::CaretPosition {
+                position_in_line: 30.0 - index as f32 * 10.0,
+                trailing_position_in_line: 20.0 - index as f32 * 10.0,
+                start_offset: index,
+                last_offset: index,
+            })
+            .collect()],
+    }
+}
+
+/// A cell holding two LTR characters followed by two RTL ones, all of width 10.
+/// Visually: `a` `b` then character 3 and character 2, in that order.
+#[allow(clippy::single_range_in_vec_init)]
+fn make_bidi_test_cell_layout() -> CellLayout {
+    let caret = |position_in_line: f32, trailing_position_in_line: f32, offset: usize| {
+        warpui_core::text_layout::CaretPosition {
+            position_in_line,
+            trailing_position_in_line,
+            start_offset: offset,
+            last_offset: offset,
+        }
+    };
+    CellLayout {
+        line_heights: vec![20.0],
+        line_y_offsets: vec![0.0],
+        line_char_ranges: vec![CharOffset::from(0)..CharOffset::from(4)],
+        line_widths: vec![40.0],
+        line_caret_positions: vec![vec![
+            caret(0.0, 10.0, 0),
+            caret(10.0, 20.0, 1),
+            caret(40.0, 30.0, 2),
+            caret(30.0, 20.0, 3),
+        ]],
+    }
+}
+
+/// Every offset reachable by clicking across the line, in visual order.
+fn offsets_reachable_by_clicking(layout: &CellLayout) -> Vec<usize> {
+    let width = layout.line_widths[0];
+    let mut offsets = vec![];
+    for step in 0..1000 {
+        let offset = layout
+            .char_at_x_in_line(0, width * step as f32 / 1000.)
+            .as_usize();
+        if offsets.last() != Some(&offset) {
+            offsets.push(offset);
+        }
+    }
+    offsets
+}
+
+#[test]
+fn test_x_for_char_in_line_rtl() {
+    let layout = make_rtl_test_cell_layout();
+    // Each caret renders at its leading edge, which runs right to left.
+    assert_eq!(layout.x_for_char_in_line(0, 0), 30.0);
+    assert_eq!(layout.x_for_char_in_line(0, 1), 20.0);
+    assert_eq!(layout.x_for_char_in_line(0, 2), 10.0);
+    // The index past the last character is the trailing edge of the character
+    // before it, which for RTL text is the line's *left* edge and not its width.
+    assert_eq!(layout.x_for_char_in_line(0, 3), 0.0);
+}
+
+#[test]
+fn test_char_at_x_in_line_rtl_edges() {
+    let layout = make_rtl_test_cell_layout();
+    // The line's left edge is the end of the text, and its right edge the start.
+    assert_eq!(layout.char_at_x_in_line(0, 0.0), CharOffset::from(3));
+    assert_eq!(layout.char_at_x_in_line(0, -5.0), CharOffset::from(3));
+    assert_eq!(layout.char_at_x_in_line(0, 30.0), CharOffset::from(0));
+    assert_eq!(layout.char_at_x_in_line(0, 45.0), CharOffset::from(0));
+}
+
+#[test]
+fn test_char_at_x_in_line_rtl_reaches_every_offset() {
+    let layout = make_rtl_test_cell_layout();
+    // Dragging from one edge to the other has to pass through every offset in
+    // between, in reverse. Before carets carried a trailing edge, offset 3 had no
+    // x of its own and a selection could never include the last character.
+    assert_eq!(offsets_reachable_by_clicking(&layout), vec![3, 2, 1, 0]);
+    // Within a character, the half nearer its leading (right) edge belongs to it.
+    assert_eq!(layout.char_at_x_in_line(0, 28.0), CharOffset::from(0));
+    assert_eq!(layout.char_at_x_in_line(0, 22.0), CharOffset::from(1));
+}
+
+#[test]
+fn test_char_at_x_in_line_bidi() {
+    let layout = make_bidi_test_cell_layout();
+    assert_eq!(layout.char_at_x_in_line(0, 0.0), CharOffset::from(0));
+    assert_eq!(layout.char_at_x_in_line(0, 40.0), CharOffset::from(2));
+    // Left to right: the LTR pair, then the RTL pair in reverse. Offset 2 shows up
+    // twice because the boundary at the start of the RTL run and the one at its
+    // end sit at the same x; which one a click resolves to depends on the side of
+    // the seam it lands on, and that is what lets a drag cover the whole run.
+    assert_eq!(
+        offsets_reachable_by_clicking(&layout),
+        vec![0, 1, 2, 4, 3, 2]
+    );
+}
+
 fn make_test_laid_out_table() -> LaidOutTable {
     let source = "aaa\tbbb\nccc\tddd\n";
     let table = FormattedTable::from_internal_format(source);

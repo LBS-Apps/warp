@@ -1844,16 +1844,15 @@ impl CellLayout {
             line_caret_positions.push(line.caret_positions.clone());
             y_offset += height;
 
-            let char_start = line
-                .caret_positions
-                .first()
-                .map(|cp| cp.start_offset)
-                .unwrap_or(0);
-            let char_end = line
-                .caret_positions
-                .last()
-                .map(|cp| cp.last_offset + 1)
-                .unwrap_or(char_start);
+            // Caret positions are stored in visual order, so on a line containing
+            // RTL text the first one is not the line's first character. Ask the
+            // line for its logical bounds instead of reading off either end.
+            let char_start = line.first_index();
+            let char_end = if line.caret_positions.is_empty() {
+                char_start
+            } else {
+                line.end_index()
+            };
             line_char_ranges.push(CharOffset::from(char_start)..CharOffset::from(char_end));
         }
 
@@ -1889,10 +1888,24 @@ impl CellLayout {
                 return caret.position_in_line;
             }
         }
-        if carets
-            .first()
-            .is_some_and(|caret| char_offset < caret.start_offset)
+
+        // The index right after a grapheme has no caret of its own, but it is
+        // that grapheme's trailing edge. That edge is only worth consulting for
+        // RTL text, where it sits at the *left* of the grapheme instead of at the
+        // line's right edge. This mirrors `Line::x_for_index`.
+        if let Some(caret) = carets
+            .iter()
+            .find(|caret| caret.last_offset + 1 == char_offset)
+            && caret.is_rtl()
         {
+            return caret.trailing_position_in_line;
+        }
+
+        // Clamp to the left or right of the line. Caret positions are in visual
+        // order, so the smallest offset is the line's first character rather than
+        // the first entry in the list.
+        let first_index = carets.iter().map(|caret| caret.start_offset).min();
+        if first_index.is_some_and(|first| char_offset < first) {
             0.0
         } else {
             width
@@ -1912,10 +1925,11 @@ impl CellLayout {
 
     /// Returns the nearest character offset for a horizontal hit-test within a line.
     ///
-    /// The explicit caret list does not include the insertion point at the visual end of the
-    /// line, so we compare against both the stored caret positions and the implicit line-end
-    /// caret at `line_width`. That keeps table hit-testing from snapping to the last glyph when a
-    /// click near the right edge is visually closer to the position after it.
+    /// Each caret spans one grapheme, bounded by its leading edge - the caret for its own
+    /// `start_offset` - and its trailing edge, the caret for the index after it. We find the
+    /// grapheme `x` falls on and take whichever of its two edges is closer, which is how the
+    /// insertion point after the line's last character is reachable even though it has no caret
+    /// entry of its own. This mirrors `Line::caret_index_for_x`.
     pub fn char_at_x_in_line(&self, line_idx: usize, x: f32) -> CharOffset {
         let Some(range) = self.line_char_ranges.get(line_idx) else {
             return CharOffset::zero();
@@ -1927,31 +1941,72 @@ impl CellLayout {
         let Some(carets) = self.line_caret_positions.get(line_idx) else {
             return range.start;
         };
-        if carets.is_empty() || x <= 0.0 {
+        if carets.is_empty() {
             return range.start;
         }
 
+        let clamp = |index: usize| CharOffset::from(index).clamp(range.start, range.end);
+
+        // Past either edge of the line, clamp to the index that actually sits at
+        // that edge. RTL text reverses them: the left edge is the end of the text
+        // and the right edge is its start.
+        if x <= 0.0 {
+            return clamp(Self::index_at_edge(carets, LineEdge::Left));
+        }
         let line_width = self.line_widths.get(line_idx).copied().unwrap_or(0.0);
         if x >= line_width {
-            return range.end;
-        }
-        let mut closest = range.start;
-        let mut closest_distance = f32::INFINITY;
-
-        for caret in carets {
-            let distance = (caret.position_in_line - x).abs();
-            if distance <= closest_distance {
-                closest = CharOffset::from(caret.start_offset).clamp(range.start, range.end);
-                closest_distance = distance;
-            }
+            return clamp(Self::index_at_edge(carets, LineEdge::Right));
         }
 
-        if (line_width - x).abs() <= closest_distance {
-            range.end
+        // Resolving within a grapheme, rather than against the line's boundaries
+        // as a whole, matters where an LTR and an RTL run meet: two different
+        // indices sit at the same x there, and only the one belonging to the
+        // grapheme under the cursor keeps a click pointed at what is under it.
+        let Some(caret) = carets.iter().min_by_key(|caret| {
+            let (left, right) = caret.visual_bounds();
+            OrderedFloat(if x < left {
+                left - x
+            } else if x > right {
+                x - right
+            } else {
+                0.
+            })
+        }) else {
+            return range.start;
+        };
+
+        // Exactly between the two edges counts as past the leading one, so that a
+        // click on the midpoint of a character rounds towards the next index.
+        if (x - caret.position_in_line).abs() >= (x - caret.trailing_position_in_line).abs() {
+            clamp(caret.last_offset + 1)
         } else {
-            closest
+            clamp(caret.start_offset)
         }
     }
+
+    /// The caret index at one visual edge of a line. For LTR text the left edge is
+    /// the first index and the right edge the one past the last character; RTL text
+    /// swaps the two.
+    fn index_at_edge(carets: &[CaretPosition], edge: LineEdge) -> usize {
+        match edge {
+            LineEdge::Left => carets
+                .iter()
+                .min_by_key(|caret| OrderedFloat(caret.visual_bounds().0))
+                .map_or(0, |caret| caret.index_at_left_edge()),
+            LineEdge::Right => carets
+                .iter()
+                .max_by_key(|caret| OrderedFloat(caret.visual_bounds().1))
+                .map_or(0, |caret| caret.index_at_right_edge()),
+        }
+    }
+}
+
+/// Which side of a laid-out line a position refers to. Distinct from the first and
+/// last character, which only coincide with the edges for LTR text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineEdge {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone)]
