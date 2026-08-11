@@ -351,6 +351,141 @@ fn test_bidi_caret_positions() -> Result<()> {
     Ok(())
 }
 
+/// Lays out `text` as a single line in the default UI font.
+fn layout_line_with_fallback_font(text: &str) -> Line {
+    let (font_db, font_family) = init_fonts();
+
+    font_db.text_layout_system().layout_line(
+        text,
+        LineStyle {
+            font_size: 16.0,
+            line_height_ratio: 1.2,
+            baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+            fixed_width_tab_size: None,
+        },
+        &[(
+            0..text.encode_utf16().count(),
+            StyleAndFont::new(font_family, Properties::default(), TextStyle::new()),
+        )],
+        10000.0,
+        ClipConfig::default(),
+    )
+}
+
+/// Every caret boundary reachable by clicking, in visual order left to right.
+fn indices_reachable_by_clicking(line: &Line) -> Vec<usize> {
+    let mut indices = vec![];
+    // Sample finely enough to land inside every glyph, however narrow.
+    for step in 0..1000 {
+        let x = line.width * (step as f32) / 1000.;
+        if let Some(index) = line.caret_index_for_x(x)
+            && indices.last() != Some(&index)
+        {
+            indices.push(index);
+        }
+    }
+    indices
+}
+
+/// The RTL text in this test uses font fallback, which means it won't behave
+/// consistently across platforms.
+///
+/// Regression test: caret positions used to carry only the *leading* edge of each
+/// grapheme, so the boundary at the visual-left edge of an RTL run - logically
+/// *after* the run's last character - had no entry at all. Clicking or dragging
+/// there snapped back to the previous character, which dropped the last Hebrew
+/// letter from a mouse selection ("לא ידוע" copied as "לא ידו") and placed the
+/// insertion caret one grapheme away from where the user clicked.
+#[test]
+fn test_rtl_caret_hit_testing() -> Result<()> {
+    // 7 characters, laid out right to left: 'ע' is drawn leftmost, 'ל' rightmost.
+    let text = "לא ידוע";
+    let line = layout_line_with_fallback_font(text);
+
+    // Logical bounds must not follow visual order.
+    assert_eq!(line.first_index(), 0);
+    assert_eq!(line.last_index(), 6);
+    assert_eq!(line.end_index(), 7);
+
+    // The line's left edge is the end of the text, since the text runs right to left.
+    assert_eq!(line.caret_index_for_x(0.), Some(7));
+    // ...and its right edge is the start of the text.
+    assert_eq!(line.caret_index_for_x(line.width - 0.01), Some(0));
+
+    // Selecting the whole word by dragging from one edge to the other has to be
+    // able to reach every index in between, in reverse order.
+    assert_eq!(
+        indices_reachable_by_clicking(&line),
+        vec![7, 6, 5, 4, 3, 2, 1, 0]
+    );
+
+    // The caret for the end of the text renders at the left edge, not at the width.
+    assert!(line.caret_position_for_index(7) < line.caret_position_for_index(6));
+
+    // Dragging past either edge of the line has to clamp to the index that is
+    // actually at that edge, which RTL text reverses.
+    assert_eq!(line.index_at_left_edge(), 7);
+    assert_eq!(line.index_at_right_edge(), 0);
+    assert_eq!(line.caret_index_for_x_unbounded(-10.), 7);
+    assert_eq!(line.caret_index_for_x_unbounded(line.width + 10.), 0);
+
+    Ok(())
+}
+
+/// The RTL text in this test uses font fallback, which means it won't behave
+/// consistently across platforms.
+#[test]
+fn test_bidi_line_edges() -> Result<()> {
+    // Only the tail of this line is RTL, so its left edge is ordinary LTR text.
+    let line = layout_line_with_fallback_font("show לא ידוע");
+
+    assert_eq!(line.index_at_left_edge(), 0);
+    // 'ע' is drawn last, and the index after it ends the line.
+    assert_eq!(line.index_at_right_edge(), 5);
+    assert_eq!(line.caret_index_for_x_unbounded(-10.), 0);
+    assert_eq!(line.caret_index_for_x_unbounded(line.width + 10.), 5);
+
+    Ok(())
+}
+
+/// LTR text must keep clamping to the first and past-the-end index.
+#[test]
+fn test_ltr_line_edges() -> Result<()> {
+    let line = layout_line_with_fallback_font("show it");
+
+    assert_eq!(line.index_at_left_edge(), line.first_index());
+    assert_eq!(line.index_at_right_edge(), line.end_index());
+
+    Ok(())
+}
+
+/// The RTL text in this test uses font fallback, which means it won't behave
+/// consistently across platforms.
+#[test]
+fn test_bidi_caret_hit_testing() -> Result<()> {
+    // Characters 5..=11 are the RTL run, embedded in LTR text.
+    let text = "show לא ידוע as";
+    let line = layout_line_with_fallback_font(text);
+
+    assert_eq!(line.first_index(), 0);
+    assert_eq!(line.last_index(), 14);
+
+    // Left to right: "show ", then the RTL run in reverse, then " as".
+    //
+    // Both seams between the LTR and RTL text hold two caret positions at the same
+    // x - the boundary at the start of the run (5) and the one at its end (12) -
+    // and which one you get depends on which side of the seam you click, so 5 and
+    // 12 each show up twice. That is what lets a drag cover the whole run: press
+    // inside the space before it to get 5, release on the left half of 'ע' to get
+    // 12, and the selection is exactly 5..12.
+    assert_eq!(
+        indices_reachable_by_clicking(&line),
+        vec![0, 1, 2, 3, 4, 5, 12, 11, 10, 9, 8, 7, 6, 5, 12, 13, 14]
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_layout_text_ligatures() -> Result<()> {
     let mut font_db = FontDB::new();

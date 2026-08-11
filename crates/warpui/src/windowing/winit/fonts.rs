@@ -1022,6 +1022,12 @@ impl TextLayoutSystem {
                     - 1;
                 caret_positions.push(CaretPosition {
                     position_in_line: glyph.x,
+                    // cosmic-text reports the glyph's left edge regardless of
+                    // direction, so for RTL text these two edges are swapped
+                    // relative to what the field names describe. Hit-testing RTL
+                    // text on this backend is approximate for that reason; the
+                    // Core Text backend used on macOS distinguishes them.
+                    trailing_position_in_line: glyph.x + glyph.w,
                     start_offset,
                     last_offset,
                 });
@@ -1047,6 +1053,7 @@ impl TextLayoutSystem {
         if has_trailing_newline {
             caret_positions.push(CaretPosition {
                 position_in_line: layout_line.w,
+                trailing_position_in_line: layout_line.w,
                 start_offset: last_glyph_offset + 1,
                 last_offset: last_glyph_offset + 1,
             });
