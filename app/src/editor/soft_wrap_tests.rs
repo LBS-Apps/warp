@@ -91,17 +91,20 @@ fn test_soft_wrapped_row_bounds_multi_codepoint_cluster() {
     line.caret_positions = vec![
         text_layout::CaretPosition {
             position_in_line: 0.0,
+            trailing_position_in_line: 0.0,
             start_offset: 0,
             last_offset: 0,
         },
         text_layout::CaretPosition {
             position_in_line: 0.0,
+            trailing_position_in_line: 0.0,
             start_offset: 1,
             last_offset: 1,
         },
         // The trailing cluster occupies two buffer characters (indices 2 and 3).
         text_layout::CaretPosition {
             position_in_line: 0.0,
+            trailing_position_in_line: 0.0,
             start_offset: 2,
             last_offset: 3,
         },

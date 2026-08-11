@@ -223,6 +223,7 @@ fn single_line_cell_layout(char_count: usize, line_height: f32, line_width: f32)
             start_offset: i,
             last_offset: i,
             position_in_line: i as f32 * char_width,
+            trailing_position_in_line: (i + 1) as f32 * char_width,
         });
     }
     CellLayout {

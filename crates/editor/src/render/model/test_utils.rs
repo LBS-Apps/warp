@@ -265,6 +265,7 @@ pub fn layout(text: &str, styles: &RichTextStyles, max_width: impl IntoPixels) -
 
         carets_acc.push(CaretPosition {
             position_in_line: line_width.as_f32(),
+            trailing_position_in_line: (line_width + char_width).as_f32(),
             start_offset: index,
             last_offset: index,
         });
