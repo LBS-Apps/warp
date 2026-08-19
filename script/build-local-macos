@@ -109,6 +109,76 @@ fi
 # more importantly, never replace a local build with an older CI one.
 git rev-parse HEAD > "$APP/Contents/Resources/BUILD_COMMIT"
 
+# --- pin the bundle to a stable code-signing identity ------------------------
+# Two things force this to happen HERE, in the build directory, and not only in
+# ~/bin/warposs-install.sh when the app lands in /Applications:
+#
+# 1. `script/bundle --selfsign` looks for an identity whose name contains
+#    "Apple Development" and falls back to AD-HOC signing when it finds none.
+#    There is no such identity on this machine, so every local build is ad-hoc:
+#    its designated requirement is a bare `cdhash H"..."`, which changes with
+#    every single build.
+# 2. macOS keys TCC grants and keychain ACLs on the BUNDLE ID plus that
+#    requirement, and this bundle id (dev.warp.WarpOss) is shared by the copy in
+#    /Applications and every copy left under target/. Launching the ad-hoc
+#    build-dir copy — a restart restoring it by path is enough — rewrites the
+#    stored requirement to that build's cdhash, so the next launch of the
+#    properly signed /Applications copy no longer matches and macOS re-prompts
+#    for the login keychain password plus Desktop / Documents / Downloads /
+#    Apple Music / app-data access. Verified 19.08.2026 in tccd's log:
+#      Failed to match existing code requirement for subject dev.warp.WarpOss
+#    Signing both copies with one fixed certificate keeps the requirement
+#    identical no matter which copy is launched, so the grants stick.
+#
+# The entitlements MUST be passed again: codesign --force replaces the whole
+# signature, and re-signing without them silently drops every entitlement the
+# bundle step applied. tccd then logs, for the stripped bundle:
+#   service: kTCCServiceAppleEvents requires entitlement
+#   com.apple.security.automation.apple-events but it is missing
+#
+# Signing comes after the BUILD_COMMIT stamp on purpose: Contents/Resources is
+# sealed, so writing that file invalidates whatever signature was already there.
+SIGN_ID="WarpOss Local Signing"
+ENTITLEMENTS="$REPO_ROOT/script/Debug-Entitlements.plist"
+
+# Read the identity list into a variable instead of piping it into `grep -q`:
+# under `set -o pipefail` grep exits on the first match, `security` dies of
+# SIGPIPE, and the pipeline reports 141 — a successful match would read as
+# "identity missing".
+IDENTITIES="$(security find-identity -p codesigning 2>/dev/null || true)"
+EXPECTED_LEAF="$(printf '%s\n' "$IDENTITIES" | awk -v id="$SIGN_ID" '$0 ~ id { print $2; exit }')"
+
+case "$IDENTITIES" in
+  *"$SIGN_ID"*)
+    if codesign --force --deep --options runtime --sign "$SIGN_ID" \
+         --entitlements "$ENTITLEMENTS" "$APP"; then
+      echo "Signed with '$SIGN_ID'."
+    else
+      echo "WARNING: signing with '$SIGN_ID' failed; the bundle stays ad-hoc." >&2
+    fi
+    ;;
+  *)
+    echo "WARNING: identity '$SIGN_ID' is not in the keychain; the bundle stays" >&2
+    echo "ad-hoc, so macOS will re-prompt for permissions after every build." >&2
+    ;;
+esac
+
+# Check the result on disk rather than trusting the exit code above: an ad-hoc
+# fallback is exactly what brings the permission prompts back, and it would
+# otherwise only print a line nobody reads. An ad-hoc signature prints its
+# requirement commented out ("# designated => ..."), so strip the prefix and
+# report what was found instead.
+DR="$(codesign -d -r- "$APP" 2>&1 | sed -n 's/^#* *designated => //p' || true)"
+if [ -n "$EXPECTED_LEAF" ] && printf '%s' "$DR" | grep -qi "$EXPECTED_LEAF"; then
+  echo "Designated requirement pinned to '$SIGN_ID' (${EXPECTED_LEAF:0:8})."
+else
+  echo "WARNING: bundle is NOT pinned to '$SIGN_ID'." >&2
+  echo "  designated requirement: ${DR:-<none>}" >&2
+  echo "  expected certificate leaf: ${EXPECTED_LEAF:-<identity not in keychain>}" >&2
+  echo "  macOS will treat this build as a new app and re-prompt for the keychain" >&2
+  echo "  password and for Desktop / Documents / Downloads access." >&2
+fi
+
 MINS=$(( ($(date +%s) - START) / 60 ))
 echo
 echo "Built in ${MINS}m: $APP"
