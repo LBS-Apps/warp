@@ -39,6 +39,7 @@ use super::grapheme_cursor::{self, GraphemeCursor};
 use super::row::Row;
 use super::{ConvertToAbsolute as _, Cursor, SelectionCursor};
 use crate::SizeInfo;
+use crate::bidi;
 use crate::event_listener::ChannelEventListener;
 pub use crate::model::TermMode;
 use crate::model::ansi::{self, Color, CursorStyle, Handler, NamedColor};
@@ -1083,12 +1084,23 @@ impl GridHandler {
         }
 
         let grid_row = self.row(row)?;
-        let row_length = min(grid_row.line_length(), cols.end + 1);
+
+        // A mouse selection covers visual (on-screen) columns, which on
+        // bidi-reordered rows are not the logical cell columns. Translate the
+        // visual range into per-logical-column selection flags; None means the
+        // row is painted in logical order and `cols` applies directly.
+        let bidi_selected = Self::bidi_selected_cols(grid_row.as_ref(), &cols);
+        let row_length = if bidi_selected.is_some() {
+            grid_row.line_length()
+        } else {
+            min(grid_row.line_length(), cols.end + 1)
+        };
 
         // Include wide char when trailing spacer is selected.
-        if grid_row
-            .get(cols.start)
-            .is_some_and(|cell| cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+        if bidi_selected.is_none()
+            && grid_row
+                .get(cols.start)
+                .is_some_and(|cell| cell.flags.contains(Flags::WIDE_CHAR_SPACER))
         {
             cols.start -= 1;
         }
@@ -1098,7 +1110,12 @@ impl GridHandler {
             || (respect_obfuscated_secrets == RespectObfuscatedSecrets::Yes
                 && self.get_secret_obfuscation().is_visually_obfuscated());
 
-        for col in IndexRange::from(cols.start..row_length) {
+        let first_col = if bidi_selected.is_some() {
+            0
+        } else {
+            cols.start
+        };
+        for col in IndexRange::from(first_col..row_length) {
             let cell = grid_row.get(col);
             let Some(cell) = cell else {
                 // If the cell doesn't exist for some reason, then we can break and
@@ -1117,6 +1134,14 @@ impl GridHandler {
 
             if cell.c == '\t' {
                 tab_mode = true;
+            }
+
+            // On bidi rows, emit only the cells whose glyphs the visual
+            // selection actually covers.
+            if let Some(selected) = &bidi_selected
+                && !selected.get(col).copied().unwrap_or(false)
+            {
+                continue;
             }
 
             if !cell
@@ -1166,6 +1191,9 @@ impl GridHandler {
         // If wide char is not part of the selection, but leading spacer is, include it.
         if row_length == self.columns()
             && row_length >= 2
+            && bidi_selected
+                .as_ref()
+                .is_none_or(|selected| selected.last().copied().unwrap_or(false))
             && grid_row
                 .get(row_length - 1)
                 .is_some_and(|cell| cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER))
@@ -1177,6 +1205,51 @@ impl GridHandler {
         }
 
         Some(text)
+    }
+
+    /// A mouse selection is made against the painted (visual) glyph order,
+    /// while grid cells are stored in logical order. For rows the renderer
+    /// bidi-reorders (see [`bidi::visual_spans`]), return a per-logical-column
+    /// flag saying whether that cell's glyph falls inside the selection's
+    /// visual column range `cols` (end-inclusive). Returns None for rows that
+    /// are painted in logical order, where `cols` already is the logical range.
+    fn bidi_selected_cols(grid_row: &Row, cols: &Range<usize>) -> Option<Vec<bool>> {
+        let len = grid_row.line_length();
+        let mut entries = Vec::with_capacity(len);
+        let mut entry_cols = Vec::with_capacity(len);
+        for col in 0..len {
+            let Some(cell) = grid_row.get(col) else {
+                break;
+            };
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let width = if cell.flags.contains(Flags::WIDE_CHAR) {
+                2
+            } else {
+                1
+            };
+            entries.push((cell.c, width));
+            entry_cols.push(col);
+        }
+
+        let spans = bidi::visual_spans(&entries)?;
+
+        let mut selected = vec![false; len];
+        for (entry, span) in spans.iter().enumerate() {
+            if span.start <= cols.end && span.end > cols.start {
+                let col = entry_cols[entry];
+                // Cover the wide char's spacer column too, so a selection
+                // edge cannot split a cell pair.
+                for flag in selected.iter_mut().skip(col).take(entries[entry].1) {
+                    *flag = true;
+                }
+            }
+        }
+        Some(selected)
     }
 
     /// Convert range between two points to a String.
