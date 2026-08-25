@@ -16080,6 +16080,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "typed-path 0.10.0",
+ "unicode-bidi",
  "unicode-general-category",
  "unicode-segmentation",
  "unicode-width 0.1.14",

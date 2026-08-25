@@ -1555,31 +1555,7 @@ fn paint_line(
     }
 }
 
-/// Returns true if `c` belongs to a script that requires bidi reordering and/or
-/// contextual shaping at paint time. For these characters, mapping a glyph back
-/// to its logical cell column (as `paint_line` does) destroys both visual order
-/// and joining, so the row must instead be painted at shaper-produced
-/// positions via `paint_complex_line`.
-fn is_complex_script_char(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x0590..=0x05FF    // Hebrew
-        | 0x0600..=0x06FF  // Arabic
-        | 0x0700..=0x074F  // Syriac
-        | 0x0750..=0x077F  // Arabic Supplement
-        | 0x0780..=0x07BF  // Thaana
-        | 0x07C0..=0x07FF  // NKo
-        | 0x0860..=0x086F  // Syriac Supplement
-        | 0x0870..=0x089F  // Arabic Extended-B
-        | 0x08A0..=0x08FF  // Arabic Extended-A
-        | 0xFB1D..=0xFDFF  // Hebrew + Arabic Presentation Forms-A
-        | 0xFE70..=0xFEFF  // Arabic Presentation Forms-B
-    )
-}
-
-fn row_needs_complex_layout(line: &str) -> bool {
-    line.chars().any(is_complex_script_char)
-}
+pub(crate) use warp_terminal::bidi::{is_complex_script_char, row_needs_complex_layout};
 
 /// Pre-scan visible rows in `start_row..end_row` for any character that requires
 /// bidi reorder or contextual shaping. If found, the dispatcher routes the
