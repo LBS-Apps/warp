@@ -1,3 +1,4 @@
+pub mod bidi;
 pub mod bootstrap;
 pub mod event;
 pub mod event_listener;

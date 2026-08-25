@@ -832,3 +832,54 @@ fn test_layout_text_last_line_clipped_ligatures() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn bidi_reorders_a_mixed_hebrew_line_like_the_unicode_bidi_algorithm() -> Result<()> {
+    // The terminal's visual-selection extraction (warp_terminal::bidi) maps
+    // on-screen columns to logical cells with the Unicode Bidi Algorithm and
+    // an LTR base direction. That is only sound while Core Text paints in the
+    // same order, so pin the visual glyph order it produces for a mixed
+    // Hebrew/English line: the LTR prefix stays put and the whole RTL segment
+    // (both Hebrew words and the arrow between them) is reversed.
+    let mut font_db = FontDB::new();
+    let menlo = font_db.load_from_system("Menlo")?;
+
+    let text = "Settings → יומן → הגדרות כלליות Google";
+    let line = layout_line(
+        text,
+        LineStyle {
+            font_size: 16.0,
+            line_height_ratio: 1.2,
+            baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+            fixed_width_tab_size: None,
+        },
+        &[(
+            0..text.encode_utf16().count(),
+            StyleAndFont::new(menlo, Properties::default(), TextStyle::new()),
+        )],
+        &font_db,
+        ClipConfig::default(),
+    );
+
+    let mut glyphs: Vec<(usize, f32)> = line
+        .runs
+        .iter()
+        .flat_map(|r| r.glyphs.iter())
+        .map(|g| (g.index, g.position_along_baseline.x()))
+        .collect();
+    glyphs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    assert_eq!(
+        glyphs.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+        vec![
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, // "Settings → " stays in place
+            30, 29, 28, 27, 26, 25, // כלליות
+            24, // space
+            23, 22, 21, 20, 19, 18, // הגדרות
+            17, 16, 15, // " → " inside the RTL segment
+            14, 13, 12, 11, // יומן
+            31, 32, 33, 34, 35, 36, 37, // " Google"
+        ]
+    );
+    Ok(())
+}

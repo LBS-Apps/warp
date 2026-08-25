@@ -2824,3 +2824,89 @@ fn test_full_grid_clear_drops_active_hyperlink() {
         }
     }
 }
+
+// --- Visual (bidi) selection extraction ---------------------------------
+//
+// The renderer paints Hebrew/Arabic rows at Core Text's bidi-reordered glyph
+// positions, and a mouse selection covers a span of on-screen (visual)
+// columns. Extraction must therefore return the logical cells whose glyphs
+// the selection covers, not the cells whose logical column numbers happen to
+// fall in the span. The row below is painted as:
+//
+//   logical: Settings → יומן → הגדרות כלליות Google
+//   visual:  "Settings → " + reversed RTL segment + " Google"
+//
+// so visual columns 11.. show the RTL segment's logically-LAST characters.
+
+#[test]
+fn bidi_row_selection_copies_the_covered_glyphs_not_the_column_numbers() {
+    let blockgrid = mock_blockgrid("Settings → יומן → הגדרות כלליות Google");
+
+    // Visual columns 0..=21: the ASCII prefix plus the leftmost 11 Hebrew
+    // glyph cells, which display the tail of the RTL segment (all of כלליות
+    // and the דרות tail of הגדרות), emitted in logical order.
+    assert_eq!(
+        blockgrid.grid_handler.bounds_to_string(
+            Point::new(0, 0),
+            Point::new(0, 21),
+            false,
+            RespectObfuscatedSecrets::No,
+            false,
+            RespectDisplayedOutput::No,
+        ),
+        "Settings → דרות כלליות"
+    );
+}
+
+#[test]
+fn bidi_row_selection_of_one_visual_word_copies_that_word() {
+    let blockgrid = mock_blockgrid("Settings → יומן → הגדרות כלליות Google");
+
+    // Visual columns 27..=30 show the glyphs of יומן (the logically-first
+    // Hebrew word sits at the visual END of the reversed RTL segment).
+    assert_eq!(
+        blockgrid.grid_handler.bounds_to_string(
+            Point::new(0, 27),
+            Point::new(0, 30),
+            false,
+            RespectObfuscatedSecrets::No,
+            false,
+            RespectDisplayedOutput::No,
+        ),
+        "יומן"
+    );
+}
+
+#[test]
+fn bidi_row_full_selection_returns_the_logical_line() {
+    let blockgrid = mock_blockgrid("Settings → יומן → הגדרות כלליות Google");
+
+    assert_eq!(
+        blockgrid.grid_handler.bounds_to_string(
+            Point::new(0, 0),
+            Point::new(0, 37),
+            false,
+            RespectObfuscatedSecrets::No,
+            false,
+            RespectDisplayedOutput::No,
+        ),
+        "Settings → יומן → הגדרות כלליות Google"
+    );
+}
+
+#[test]
+fn plain_ltr_row_partial_selection_is_unchanged_by_bidi_mapping() {
+    let blockgrid = mock_blockgrid("plain ascii row");
+
+    assert_eq!(
+        blockgrid.grid_handler.bounds_to_string(
+            Point::new(0, 0),
+            Point::new(0, 4),
+            false,
+            RespectObfuscatedSecrets::No,
+            false,
+            RespectDisplayedOutput::No,
+        ),
+        "plain"
+    );
+}
