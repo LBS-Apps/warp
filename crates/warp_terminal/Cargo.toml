@@ -54,6 +54,7 @@ string-offset.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 typed-path.workspace = true
+unicode-bidi.workspace = true
 unicode-general-category.workspace = true
 unicode-width.workspace = true
 urlocator.workspace = true
