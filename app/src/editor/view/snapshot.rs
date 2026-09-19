@@ -18,8 +18,8 @@ use warpui::fonts::{Cache as FontCache, FamilyId, Properties};
 use warpui::platform::LineStyle;
 use warpui::text::point::Point;
 use warpui::text_layout::{
-    self, ClipConfig, ComputeBaselinePositionFn, DEFAULT_TOP_BOTTOM_RATIO, LayoutCache,
-    StyleAndFont, TextAlignment, TextStyle, default_compute_baseline_position_fn,
+    self, CaretAffinity, ClipConfig, ComputeBaselinePositionFn, DEFAULT_TOP_BOTTOM_RATIO,
+    LayoutCache, StyleAndFont, TextAlignment, TextStyle, default_compute_baseline_position_fn,
 };
 use warpui::{AppContext, EntityId, ModelHandle};
 
@@ -84,6 +84,9 @@ pub struct ViewSnapshot {
 
     pub autosuggestion_state: Option<Arc<AutosuggestionState>>,
     pub command_xray: Option<Arc<Description>>,
+    /// Where the last mouse click or drag wants the cursor drawn on a bidi seam;
+    /// see [`super::EditorAction::SetMouseCaret`].
+    pub mouse_caret: Option<(DisplayPoint, CaretAffinity)>,
 
     pub cached_buffer_points: HashMap<Cow<'static, str>, Point>,
 
