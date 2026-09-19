@@ -6,7 +6,7 @@ use crate::fonts::{
     FamilyId, Properties, collect_glyph_indices, collect_line_caret_position_starts, init_fonts,
 };
 use crate::platform::FontDB as _;
-use crate::text_layout::DEFAULT_TOP_BOTTOM_RATIO;
+use crate::text_layout::{CaretAffinity, DEFAULT_TOP_BOTTOM_RATIO};
 
 pub(crate) fn collect_line_caret_position_pairs(line: &Line) -> Vec<(usize, usize)> {
     line.caret_positions
@@ -881,5 +881,213 @@ fn bidi_reorders_a_mixed_hebrew_line_like_the_unicode_bidi_algorithm() -> Result
             31, 32, 33, 34, 35, 36, 37, // " Google"
         ]
     );
+    Ok(())
+}
+
+/// Lays out `text` the way the Input Box does (`layout_text_frames`): through the
+/// multi-line frame path, one style run per character with the first word coloured
+/// like a syntax-highlighted command, and an optional first-line head indent for the
+/// prompt notch.
+fn layout_input_box_row(text: &str, first_line_head_indent: Option<f32>) -> Line {
+    let (font_db, font_family) = init_fonts();
+    let command_style = TextStyle {
+        foreground_color: Some(pathfinder_color::ColorU::new(255, 0, 0, 255)),
+        ..TextStyle::new()
+    };
+    let mut in_first_word = true;
+    let style_runs = text
+        .chars()
+        .enumerate()
+        .map(|(idx, ch)| {
+            if ch == ' ' {
+                in_first_word = false;
+            }
+            let style = if in_first_word {
+                command_style
+            } else {
+                TextStyle::new()
+            };
+            (
+                idx..idx + 1,
+                StyleAndFont::new(font_family, Properties::default(), style),
+            )
+        })
+        .collect_vec();
+    let frame = layout_text(
+        text,
+        LineStyle {
+            font_size: 16.0,
+            line_height_ratio: 1.2,
+            baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+            fixed_width_tab_size: None,
+        },
+        &style_runs,
+        &font_db,
+        10000.0,
+        f32::MAX,
+        Default::default(),
+        first_line_head_indent,
+    );
+    assert_eq!(frame.lines().len(), 1, "expected a single row for {text:?}");
+    frame.lines()[0].clone()
+}
+
+fn caret(line: &Line, index: usize) -> &CaretPosition {
+    line.caret_positions
+        .iter()
+        .find(|caret| caret.contains_index(index))
+        .unwrap_or_else(|| panic!("no caret for index {index}"))
+}
+
+/// The RTL text in this test uses font fallback, which means it won't behave
+/// consistently across platforms.
+///
+/// Regression test: at the seam between "echo " and the Hebrew, the index after
+/// the space is reachable from two graphemes drawn at opposite ends of the RTL
+/// run - the space's trailing edge on its left, and the first Hebrew letter's
+/// leading edge on its right. Painting that index with `caret_position_for_index`
+/// always picked the right end, so a click just after the space put the caret a
+/// whole word away. Carrying the hit's affinity keeps it where the click was.
+#[test]
+fn test_bidi_seam_caret_follows_the_clicked_side() -> Result<()> {
+    let text = "echo עעעברים בעברית";
+    let line = layout_input_box_row(text, None);
+
+    let space = caret(&line, 4);
+    let first_hebrew = caret(&line, 5);
+    assert!(!space.is_rtl());
+    assert!(first_hebrew.is_rtl());
+    // The two candidate positions for index 5 really are far apart.
+    assert!(first_hebrew.position_in_line - space.trailing_position_in_line > 50.);
+
+    // Clicking on the right half of the space resolves to index 5 from the space.
+    let just_after_space = space.trailing_position_in_line - 1.;
+    assert_eq!(
+        line.caret_hit_for_x(just_after_space),
+        Some((5, CaretAffinity::Upstream))
+    );
+    // Clicking on the right half of the first Hebrew letter also resolves to 5.
+    let before_first_hebrew = first_hebrew.position_in_line - 1.;
+    assert_eq!(
+        line.caret_hit_for_x(before_first_hebrew),
+        Some((5, CaretAffinity::Downstream))
+    );
+
+    // Each side paints back where it was clicked...
+    assert_eq!(
+        line.caret_position_for_index_with_affinity(5, Some(CaretAffinity::Upstream)),
+        space.trailing_position_in_line
+    );
+    assert_eq!(
+        line.caret_position_for_index_with_affinity(5, Some(CaretAffinity::Downstream)),
+        first_hebrew.position_in_line
+    );
+    // ...and the default placement is unchanged.
+    assert_eq!(
+        line.caret_position_for_index_with_affinity(5, None),
+        line.caret_position_for_index(5)
+    );
+
+    // Away from a seam the affinity makes no difference.
+    for index in [2, 8, 15] {
+        for affinity in [CaretAffinity::Upstream, CaretAffinity::Downstream] {
+            assert_eq!(
+                line.caret_position_for_index_with_affinity(index, Some(affinity)),
+                line.caret_position_for_index(index),
+                "index {index} {affinity:?}"
+            );
+        }
+    }
+    // Past the last grapheme the end-of-line placement still applies.
+    let end = line.end_index();
+    assert_eq!(
+        line.caret_position_for_index_with_affinity(end, Some(CaretAffinity::Upstream)),
+        line.caret_position_for_index(end)
+    );
+
+    Ok(())
+}
+
+/// Every click must paint a caret back within one glyph of where it was, once the
+/// hit's affinity is honoured - through the Input Box's own layout path, with and
+/// without the prompt notch indent.
+#[test]
+fn test_input_box_hebrew_hit_testing_round_trips() -> Result<()> {
+    for text in [
+        "עעעברים בעברית",
+        "echo עעעברים בעברית",
+        "עעעברים בעברית ",
+        "ls עעעברים בעברית -la",
+    ] {
+        for indent in [None, Some(37.0)] {
+            let line = layout_input_box_row(text, indent);
+            let max_advance = line
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| OrderedFloat(glyph.width))
+                .max()
+                .map_or(0., |width| width.0);
+            for step in 0..4000 {
+                let x = line.width * (step as f32) / 4000.;
+                let Some((index, affinity)) = line.caret_hit_for_x(x) else {
+                    continue;
+                };
+                let back = line.caret_position_for_index_with_affinity(index, Some(affinity));
+                assert!(
+                    (back - x).abs() <= max_advance + 0.5,
+                    "{text:?} indent {indent:?}: click at x={x:.1} -> index {index} \
+                     ({affinity:?}) -> caret at x={back:.1}"
+                );
+            }
+            // The frame path and the single-line path agree on what is clickable.
+            assert_eq!(
+                indices_reachable_by_clicking(&line),
+                indices_reachable_by_clicking(&layout_line_with_fallback_font(text)),
+                "{text:?} indent {indent:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The RTL text in this test uses font fallback, which means it won't behave
+/// consistently across platforms.
+///
+/// A selection highlight has to cover the glyphs of the selected characters. On a
+/// bidi row that is not the span between the two endpoint carets: the seam index
+/// has two visual positions, and a range crossing the seam is two separate spans.
+#[test]
+fn test_selection_bounds_follow_the_selected_glyphs() -> Result<()> {
+    let text = "echo עעעברים בעברית";
+    let line = layout_input_box_row(text, None);
+    let leading = |index: usize| caret(&line, index).position_in_line;
+    let trailing = |index: usize| caret(&line, index).trailing_position_in_line;
+
+    // The first Hebrew word: one span at the right end of the RTL run, from the
+    // trailing (left) edge of its last letter to the leading (right) edge of its
+    // first.
+    assert_eq!(
+        line.selection_bounds(5..12),
+        vec![(trailing(11), leading(5))]
+    );
+    // The space and the second word: the left end of the run.
+    assert_eq!(
+        line.selection_bounds(12..19),
+        vec![(trailing(18), leading(12))]
+    );
+    // The whole Hebrew run plus the LTR space before it is one contiguous span.
+    assert_eq!(line.selection_bounds(4..19), vec![(leading(4), leading(5))]);
+    // Crossing the seam from inside "echo" into the Hebrew: the tail of the LTR
+    // run and the *right* end of the RTL run, with a gap between.
+    assert_eq!(
+        line.selection_bounds(2..8),
+        vec![(leading(2), trailing(4)), (trailing(7), leading(5))]
+    );
+    // Plain LTR is one span from first to last glyph.
+    assert_eq!(line.selection_bounds(0..4), vec![(leading(0), trailing(3))]);
+    // Nothing selected, nothing highlighted.
+    assert_eq!(line.selection_bounds(5..5), Vec::<(f32, f32)>::new());
+
     Ok(())
 }

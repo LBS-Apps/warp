@@ -68,7 +68,7 @@ use warpui::platform::keyboard::KeyCode;
 use warpui::platform::{Cursor, FilePickerConfiguration, OperatingSystem};
 use warpui::text::TextBuffer;
 use warpui::text::word_boundaries::WordBoundariesPolicy;
-use warpui::text_layout::TextStyle;
+use warpui::text_layout::{CaretAffinity, TextStyle};
 use warpui::ui_components::button::ButtonTooltipPosition;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::windowing::WindowManager;
@@ -995,6 +995,10 @@ pub fn init(ctx: &mut AppContext) {
 pub enum EditorAction {
     Scroll(Vector2F),
     Select(SelectAction),
+    /// Remembers which side of a bidi seam the last mouse click or drag landed on,
+    /// so the cursor is painted where the mouse was rather than at the seam's
+    /// other visual position. `None` forgets it.
+    SetMouseCaret(Option<(DisplayPoint, CaretAffinity)>),
     UserInsert(UserInput<String>),
     VimUserInsert(UserInput<String>),
     DragAndDropFiles(Vec<UserInput<String>>),
@@ -1116,6 +1120,7 @@ impl EditorAction {
                 | EditorAction::TryToShowXRay(_)
                 | EditorAction::HideXRay
                 | EditorAction::Select(_)
+                | EditorAction::SetMouseCaret(_)
         )
     }
 
@@ -1798,6 +1803,10 @@ pub struct EditorView {
     /// a settings read on every typed character).
     /// If `None`, we do not wish to respect the user's cursor display preference.
     cursor_display_override: Option<CursorDisplayType>,
+    /// The caret placement the last mouse click or drag asked for; see
+    /// [`EditorAction::SetMouseCaret`]. Only honoured while the cursor is still at
+    /// exactly this point.
+    mouse_caret: Option<(DisplayPoint, CaretAffinity)>,
     window_id: WindowId,
     autosuggestion_state: Option<Arc<AutosuggestionState>>,
     next_command_model: Option<ModelHandle<NextCommandModel>>,
@@ -2951,6 +2960,7 @@ impl EditorView {
 
             autosuggestion_state: self.autosuggestion_state.clone(),
             command_xray: self.get_command_x_ray(),
+            mouse_caret: self.mouse_caret,
 
             cached_buffer_points: self.cached_buffer_points.clone(),
 
@@ -3206,6 +3216,7 @@ impl EditorView {
             autocomplete_symbols_allowed: options.autocomplete_symbols,
             autocomplete_symbols_setting: *editor_settings_handle.as_ref(ctx).autocomplete_symbols,
             cursor_display_override,
+            mouse_caret: None,
             autosuggestion_state: None,
             next_command_model: None,
             editor_height_shrink_delay: Arc::new(Mutex::new(EditorHeightShrinkDelay {
@@ -8555,6 +8566,7 @@ impl TypedActionView for EditorView {
         match action {
             Scroll(position) => self.scroll(*position, ctx),
             Select(action) => self.select(action, ctx),
+            SetMouseCaret(caret) => self.mouse_caret = *caret,
             UserInsert(text) => self.user_insert(text.as_ref(), ctx),
             #[cfg(feature = "voice_input")]
             ToggleVoiceInput(source) => {
