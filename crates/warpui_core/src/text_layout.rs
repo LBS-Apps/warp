@@ -569,6 +569,25 @@ pub struct CaretPosition {
     pub last_offset: usize,
 }
 
+/// Which of its two visual positions a caret index should be drawn at.
+///
+/// Away from a bidi seam the trailing edge of one grapheme and the leading edge
+/// of the next coincide, so this makes no difference. Where an LTR run meets an
+/// RTL one, the index between them sits at *both* ends of the RTL run: at the end
+/// of the LTR text (the trailing edge of the grapheme before the index) and at
+/// the far side of the RTL text (the leading edge of the grapheme at the index).
+/// Hit-testing knows which of the two the user pointed at; this carries that
+/// choice to wherever the caret is painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaretAffinity {
+    /// The caret belongs to the grapheme logically before its index and is drawn
+    /// at that grapheme's trailing edge.
+    Upstream,
+    /// The caret belongs to the grapheme logically at its index and is drawn at
+    /// that grapheme's leading edge.
+    Downstream,
+}
+
 #[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct TextStyle {
     pub foreground_color: Option<ColorU>,
@@ -1109,6 +1128,62 @@ impl Line {
         }
     }
 
+    /// Like [`Self::caret_position_for_index`], but resolves the ambiguity at a
+    /// bidi seam. Where an LTR run meets an RTL one, the index between them has
+    /// two visual positions at opposite ends of the RTL run, and
+    /// `caret_position_for_index` always takes the leading edge of the grapheme
+    /// at the index. A click that resolved to that index from the *other* side
+    /// (see [`Self::caret_hit_for_x`]) would then paint the caret at the far end
+    /// of the run; passing the affinity the hit reported keeps it where the click
+    /// was. `None` keeps the default placement.
+    pub fn caret_position_for_index_with_affinity(
+        &self,
+        index: usize,
+        affinity: Option<CaretAffinity>,
+    ) -> f32 {
+        if affinity == Some(CaretAffinity::Upstream)
+            // Past the last grapheme the trailing edge is the end of the line,
+            // whose placement `caret_position_for_index` already handles (it
+            // differs between LTR and RTL tails).
+            && index <= self.last_index()
+            && let Some(caret) = self
+                .caret_positions
+                .iter()
+                .find(|caret| caret.last_offset + 1 == index)
+        {
+            return caret.trailing_position_in_line;
+        }
+        self.caret_position_for_index(index)
+    }
+
+    /// The horizontal spans covered by the characters in `range` (caret indices,
+    /// end-exclusive), as `(left, right)` pairs in visual order. On a bidi line a
+    /// logically contiguous range is not always one visual span: selecting from
+    /// inside "echo" into the Hebrew of "echo עברית" covers the end of the LTR
+    /// run and the *right* end of the RTL run, with the rest of the Hebrew between
+    /// them unselected. Spans that touch are merged, so plain LTR or a range
+    /// within one run comes back as a single span.
+    pub fn selection_bounds(&self, range: Range<usize>) -> Vec<(f32, f32)> {
+        let mut spans: Vec<(f32, f32)> = self
+            .caret_positions
+            .iter()
+            .filter(|caret| caret.start_offset >= range.start && caret.last_offset < range.end)
+            .map(|caret| caret.visual_bounds())
+            .collect();
+        spans.sort_by_key(|(left, _)| OrderedFloat(*left));
+
+        let mut merged: Vec<(f32, f32)> = Vec::with_capacity(spans.len());
+        for (left, right) in spans {
+            match merged.last_mut() {
+                Some((_, merged_right)) if left <= *merged_right + 0.5 => {
+                    *merged_right = merged_right.max(right);
+                }
+                _ => merged.push((left, right)),
+            }
+        }
+        merged
+    }
+
     fn is_x_in_bound(&self, x: f32) -> bool {
         x >= 0. && x < self.width
     }
@@ -1198,6 +1273,16 @@ impl Line {
     /// *Important*: if you change the condition for returning `None`, make sure to update the
     /// checks in `caret_index_for_x_unbounded` as well.
     pub fn caret_index_for_x(&self, x: f32) -> Option<usize> {
+        self.caret_hit_for_x(x).map(|(index, _)| index)
+    }
+
+    /// Like [`Self::caret_index_for_x`], but also reports which edge of which
+    /// grapheme the hit resolved to, as a [`CaretAffinity`]. At a bidi seam the
+    /// same index is reachable from two graphemes that are drawn at opposite ends
+    /// of the RTL run, and only the affinity tells them apart; feed it to
+    /// [`Self::caret_position_for_index_with_affinity`] to paint the caret on the
+    /// side that was actually clicked.
+    pub fn caret_hit_for_x(&self, x: f32) -> Option<(usize, CaretAffinity)> {
         if !self.is_x_in_bound(x) {
             return None;
         }
@@ -1222,7 +1307,7 @@ impl Line {
                 0.
             })
         }) else {
-            return Some(0);
+            return Some((0, CaretAffinity::Downstream));
         };
 
         // A trailing edge past every other caret is the end of the line rather
@@ -1239,9 +1324,9 @@ impl Line {
             && !is_end_of_line;
 
         if is_past_leading_edge {
-            Some(caret.last_offset + 1)
+            Some((caret.last_offset + 1, CaretAffinity::Upstream))
         } else {
-            Some(caret.start_offset)
+            Some((caret.start_offset, CaretAffinity::Downstream))
         }
     }
 
