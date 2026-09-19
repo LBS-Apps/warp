@@ -23,7 +23,7 @@ use warpui::event::{DispatchedEvent, KeyState, ModifiersState};
 use warpui::keymap::Keystroke;
 use warpui::platform::keyboard::KeyCode;
 use warpui::text_layout::{
-    self, ComputeBaselinePositionArgs, DEFAULT_TOP_BOTTOM_RATIO, LayoutCache,
+    self, CaretAffinity, ComputeBaselinePositionArgs, DEFAULT_TOP_BOTTOM_RATIO, LayoutCache,
 };
 use warpui::text_selection_utils::{
     NewlineTickParams, calculate_tick_width, create_newline_tick_rect,
@@ -333,6 +333,9 @@ impl EditorElement {
                     },
                 }));
             }
+            ctx.dispatch_typed_action(EditorAction::SetMouseCaret(
+                point_for_position.mouse_caret(),
+            ));
             true
         } else {
             false
@@ -354,6 +357,7 @@ impl EditorElement {
                 position,
             );
             ctx.dispatch_typed_action(EditorAction::SelectWord(position));
+            ctx.dispatch_typed_action(EditorAction::SetMouseCaret(None));
             true
         } else {
             false
@@ -375,6 +379,7 @@ impl EditorElement {
                 position,
             );
             ctx.dispatch_typed_action(EditorAction::SelectLine(position));
+            ctx.dispatch_typed_action(EditorAction::SetMouseCaret(None));
             true
         } else {
             false
@@ -396,13 +401,14 @@ impl EditorElement {
         let paint = self.paint.as_ref().unwrap();
 
         if self.view_snapshot.is_selecting(app) {
+            let point_for_position = paint.possible_point_for_position(
+                &self.view_snapshot,
+                self.scroll_position(),
+                layout,
+                position,
+            );
             ctx.dispatch_typed_action(EditorAction::Select(SelectAction::Update {
-                position: paint.point_for_position(
-                    &self.view_snapshot,
-                    self.scroll_position(),
-                    layout,
-                    position,
-                ),
+                position: point_for_position.display_point,
                 scroll_position: paint.scroll_position(
                     &self.view_snapshot,
                     &self.scroll_state,
@@ -412,6 +418,9 @@ impl EditorElement {
                     app,
                 ),
             }));
+            ctx.dispatch_typed_action(EditorAction::SetMouseCaret(
+                point_for_position.mouse_caret(),
+            ));
             true
         } else {
             false
@@ -762,33 +771,44 @@ impl EditorElement {
             content_origin
         };
 
-        let start_x = if row == selection.start.row() {
-            line_layout.caret_position_for_index(selection.start.column() as usize)
+        let start_index = if row == selection.start.row() {
+            selection.start.column() as usize
         } else {
-            0.
+            line_layout.first_index()
         };
-        let end_x = if row == selection.end.row() {
-            line_layout.caret_position_for_index(selection.end.column() as usize)
+        let end_index = if row == selection.end.row() {
+            selection.end.column() as usize
         } else {
-            line_layout.width
+            line_layout.end_index()
         };
 
-        // On RTL/bidi rows the caret position of the selection start can be visually to
-        // the right of the end (logical order != visual order), which would make the
-        // rect width negative and the highlight vanish. Order the two x-values so we
-        // always draw one contiguous rect over the visual span. This is correct for
-        // pure-LTR and pure-RTL selections; a selection that mixes directions within a
-        // single line is only approximated (a fully correct version would emit one rect
-        // per bidi run, which the Line abstraction doesn't currently expose).
-        let (left_x, right_x) = (start_x.min(end_x), start_x.max(end_x));
+        // Highlight the glyphs the selected characters are drawn with, rather than
+        // the span between the two endpoint carets. On a bidi row those are not the
+        // same thing: the index at the seam between LTR and RTL text has two visual
+        // positions, so the endpoint span can land on the wrong end of the RTL run,
+        // and a range that crosses the seam is really two separate spans.
+        let mut spans = line_layout.selection_bounds(start_index..end_index);
+        if row != selection.end.row() {
+            // The selection continues past this row: run the highlight out to the
+            // row's full width, as it always has.
+            match spans.last_mut() {
+                Some((_, right_x)) => *right_x = right_x.max(line_layout.width),
+                None => spans.push((
+                    line_layout.caret_position_for_index(start_index),
+                    line_layout.width,
+                )),
+            }
+        }
 
-        ctx.scene
-            .draw_rect_with_hit_recording(RectF::new(
-                text_content_origin
-                    + vec2f(left_x, (row - first_visible_row) as f32 * line_height),
-                vec2f(right_x - left_x, line_height),
-            ))
-            .with_background(color);
+        let row_y = (row - first_visible_row) as f32 * line_height;
+        for (left_x, right_x) in spans {
+            ctx.scene
+                .draw_rect_with_hit_recording(RectF::new(
+                    text_content_origin + vec2f(left_x, row_y),
+                    vec2f(right_x - left_x, line_height),
+                ))
+                .with_background(color);
+        }
 
         let max_soft_wrap_row = layout.frame_layouts.num_lines().saturating_sub(1) as u32;
         let is_last_line = row == max_soft_wrap_row;
@@ -1017,6 +1037,17 @@ impl EditorElement {
                         }
                         MarkedTextState::Inactive => selection.end.column() as usize,
                     };
+                    // A mouse click reports which side of a bidi seam it landed on.
+                    // Honour it for as long as the cursor is still exactly where that
+                    // click put it; any keyboard movement or edit moves the point and
+                    // falls back to the default placement.
+                    let cursor_affinity = match marked_text_state {
+                        MarkedTextState::Inactive => view_snapshot
+                            .mouse_caret
+                            .filter(|(point, _)| *point == range.end)
+                            .map(|(_, affinity)| affinity),
+                        MarkedTextState::Active { .. } => None,
+                    };
                     // Use baseline position to get to bottom of text line, then subtract the font size to
                     // get to top of text. We have the multipliers of default line height ratio and top bottom ratio
                     // to get to the "correct" spot above the normal characters within a font.
@@ -1054,7 +1085,10 @@ impl EditorElement {
                             // leftward. `caret_position_for_index` walks `caret_positions`, which
                             // carry the shaper's visual `position_in_line` per offset, so the caret
                             // tracks the true insertion point. Matches `crates/editor`.
-                            cursor_row_layout.caret_position_for_index(cursor_x_index),
+                            cursor_row_layout.caret_position_for_index_with_affinity(
+                                cursor_x_index,
+                                cursor_affinity,
+                            ),
                             (selection.end.row() - first_visible_row) as f32
                                 * line_parameters.line_height,
                         );
@@ -2312,6 +2346,16 @@ pub struct PossibleDisplayPoint {
     /// Whether the display point is clamped to either the beginning or end of the line.
     pub is_clamped: bool,
     pub clamp_direction: ClampDirection,
+    /// Which side of a bidi seam the position was resolved from, when it was
+    /// resolved by hit-testing a glyph rather than clamped to an edge.
+    pub affinity: Option<CaretAffinity>,
+}
+
+impl PossibleDisplayPoint {
+    /// The caret placement to remember for this point, if hit-testing produced one.
+    fn mouse_caret(&self) -> Option<(DisplayPoint, CaretAffinity)> {
+        self.affinity.map(|affinity| (self.display_point, affinity))
+    }
 }
 
 impl PaintState {
@@ -2375,8 +2419,10 @@ impl PaintState {
         // caret_index_for_x (not index_for_x) is the caret-aware inverse: it walks
         // caret_positions rather than raw glyph x-order, so clicking on RTL/bidi text
         // (and ligatures) lands on the right character. Mirrors caret_position_for_index.
-        let col = if let Some(col) = line.caret_index_for_x(x).map(|ix| ix as u32) {
-            col
+        let mut affinity = None;
+        let col = if let Some((col, hit_affinity)) = line.caret_hit_for_x(x) {
+            affinity = Some(hit_affinity);
+            col as u32
         } else {
             // Clamp to the left or right if the x pos is before or after the buffer text,
             // respectively. Which character index sits at either edge depends on the
@@ -2398,6 +2444,7 @@ impl PaintState {
             display_point: display_point_and_clamp_direction.point,
             is_clamped,
             clamp_direction: display_point_and_clamp_direction.clamp_direction,
+            affinity,
         }
     }
 
