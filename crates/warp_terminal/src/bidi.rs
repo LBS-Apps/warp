@@ -43,7 +43,7 @@ pub fn row_needs_complex_layout(line: &str) -> bool {
 ///
 /// Returns `None` when the row contains no complex-script character: such rows
 /// are painted in logical order, so visual and logical columns coincide.
-pub(crate) fn visual_spans(entries: &[(char, usize)]) -> Option<Vec<Range<usize>>> {
+pub fn visual_spans(entries: &[(char, usize)]) -> Option<Vec<Range<usize>>> {
     if !entries.iter().any(|(c, _)| is_complex_script_char(*c)) {
         return None;
     }
@@ -68,6 +68,52 @@ pub(crate) fn visual_spans(entries: &[(char, usize)]) -> Option<Vec<Range<usize>
         col += width;
     }
     Some(spans)
+}
+
+/// For a row laid out as `line`, whose i-th character belongs to the grid cell
+/// `char_to_cell[i]`, return the visual (on-screen) column each character's
+/// glyph must be drawn in once the row is bidi-reordered.
+///
+/// Returns `None` when the row needs no reordering, i.e. when visual and
+/// logical columns already coincide.
+///
+/// The painted row has to agree cell-for-cell with this mapping, because mouse
+/// selection converts a pixel back into a column by dividing by the cell width
+/// and extraction then resolves that column through [`visual_spans`]. Letting
+/// the shaper place complex-script glyphs at its own advances instead breaks
+/// that agreement: a Hebrew fallback font is usually proportional, so its
+/// glyphs drift off the cell grid and the copied text comes from cells the
+/// highlight never covered.
+pub fn visual_columns_for_characters(line: &str, char_to_cell: &[usize]) -> Option<Vec<usize>> {
+    let mut entries: Vec<(char, usize)> = Vec::new();
+    let mut entry_cells: Vec<usize> = Vec::new();
+    for (c, cell) in line.chars().zip(char_to_cell) {
+        if entry_cells.last() == Some(cell) {
+            continue;
+        }
+        entries.push((c, 1));
+        entry_cells.push(*cell);
+    }
+
+    // A wide cell claims the column of its spacer, which never reaches the
+    // laid-out row, so the gap to the next cell is that cell's width.
+    for i in 0..entries.len() {
+        entries[i].1 = entry_cells
+            .get(i + 1)
+            .map_or(1, |next| next.saturating_sub(entry_cells[i]).max(1));
+    }
+
+    let spans = visual_spans(&entries)?;
+
+    let mut columns = Vec::with_capacity(char_to_cell.len());
+    let mut entry = 0;
+    for cell in char_to_cell.iter().take(line.chars().count()) {
+        while entry_cells[entry] != *cell {
+            entry += 1;
+        }
+        columns.push(spans[entry].start);
+    }
+    Some(columns)
 }
 
 #[cfg(test)]
