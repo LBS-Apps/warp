@@ -2,10 +2,12 @@ use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::{Vector2F, vec2f};
 use warpui::fonts::Cache as FontCache;
 use warpui::units::{IntoLines, Lines, Pixels};
+use warpui_core::scene::Scene;
+use warpui_core::text_layout::{Glyph, Line, Run};
 
 use super::{
     CachedBackgroundColor, active_or_next_match, frame_contains_complex_script,
-    is_complex_script_char, row_needs_complex_layout,
+    is_complex_script_char, paint_complex_line, row_needs_complex_layout,
 };
 use crate::terminal::grid_size_util::calculate_grid_baseline_position;
 use crate::terminal::model::grid::grid_handler::GridHandler;
@@ -273,17 +275,17 @@ fn test_is_complex_script_char_detects_rtl_scripts() {
     assert!(is_complex_script_char('ا')); // U+0627 ALEF
     assert!(is_complex_script_char('ع')); // U+0639 AIN
     assert!(is_complex_script_char('ي')); // U+064A YEH
-                                          // Arabic Supplement / Extended
+    // Arabic Supplement / Extended
     assert!(is_complex_script_char('\u{0750}')); // Arabic Supplement
     assert!(is_complex_script_char('\u{08A0}')); // Arabic Extended-A
-                                                 // Hebrew
+    // Hebrew
     assert!(is_complex_script_char('א')); // U+05D0 ALEF
     assert!(is_complex_script_char('ש')); // U+05E9 SHIN
-                                          // Syriac, Thaana, NKo
+    // Syriac, Thaana, NKo
     assert!(is_complex_script_char('\u{0710}')); // Syriac ALAPH
     assert!(is_complex_script_char('\u{0780}')); // Thaana
     assert!(is_complex_script_char('\u{07C0}')); // NKo
-                                                 // Arabic Presentation Forms-A and -B (shaped forms emitted by the shaper).
+    // Arabic Presentation Forms-A and -B (shaped forms emitted by the shaper).
     assert!(is_complex_script_char('\u{FB50}'));
     assert!(is_complex_script_char('\u{FE70}'));
 }
@@ -343,4 +345,67 @@ fn test_frame_contains_complex_script_respects_range() {
     grid.input_at_cursor("مرحبا");
     assert!(frame_contains_complex_script(&grid, 0, 1));
     assert!(!frame_contains_complex_script(&grid, 2, 5));
+}
+
+#[test]
+fn test_complex_line_glyphs_are_painted_on_the_cell_grid() {
+    // A proportional Hebrew fallback font: the shaper lays its glyphs out at
+    // its own advances, which drift off the terminal's cell grid and — before
+    // the snap below — sent mouse selections to the wrong cells.
+    const CELL_WIDTH: f32 = 7.83;
+    let shaper_advances = [4.16, 7.44, 4.12, 6.63];
+    let mut position = 0.;
+    let glyphs = shaper_advances
+        .iter()
+        .enumerate()
+        .map(|(index, advance)| {
+            let glyph = Glyph {
+                id: 0,
+                position_along_baseline: vec2f(position, 0.),
+                index,
+                width: *advance,
+            };
+            position += advance;
+            glyph
+        })
+        .collect();
+    let line = Line {
+        width: position,
+        trailing_whitespace_width: 0.,
+        runs: vec![Run {
+            font_id: warpui_core::fonts::FontId(0),
+            styles: Default::default(),
+            glyphs,
+            width: position,
+        }],
+        font_size: 13.,
+        line_height_ratio: 1.,
+        baseline_ratio: 0.8,
+        ascent: 10.,
+        descent: 3.,
+        clip_config: None,
+        caret_positions: Vec::new(),
+        chars_with_missing_glyphs: Vec::new(),
+    };
+
+    let mut scene = Scene::new(1., Default::default());
+    paint_complex_line(
+        &line,
+        vec2f(0., 0.),
+        CELL_WIDTH,
+        Some(&[3, 2, 1, 0]),
+        &mut scene,
+    );
+
+    let painted: Vec<f32> = scene
+        .layers()
+        .flat_map(|layer| layer.glyphs.iter())
+        .map(|glyph| glyph.position.x())
+        .collect();
+
+    assert_eq!(
+        painted,
+        vec![3. * CELL_WIDTH, 2. * CELL_WIDTH, CELL_WIDTH, 0.],
+        "each glyph belongs in its visual cell, not at the shaper's advance"
+    );
 }

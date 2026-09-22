@@ -1481,7 +1481,17 @@ fn render_grid_with_ligatures<'a>(
         let line_origin =
             grid_origin + vec2f(0., cell_size.y() * offset_row as f32) + baseline_position;
         if row_needs_complex_layout(&string_data.line) {
-            paint_complex_line(laid_out.as_ref(), line_origin, ctx.scene);
+            paint_complex_line(
+                laid_out.as_ref(),
+                line_origin,
+                cell_size.x(),
+                visual_columns_for_characters(
+                    &string_data.line,
+                    &string_data.character_index_to_cell_map,
+                )
+                .as_deref(),
+                ctx.scene,
+            );
         } else {
             paint_line(
                 laid_out.as_ref(),
@@ -1555,6 +1565,7 @@ fn paint_line(
     }
 }
 
+use warp_terminal::bidi::visual_columns_for_characters;
 pub(crate) use warp_terminal::bidi::{is_complex_script_char, row_needs_complex_layout};
 
 /// Pre-scan visible rows in `start_row..end_row` for any character that requires
@@ -1577,17 +1588,35 @@ fn frame_contains_complex_script(grid: &GridHandler, start_row: usize, end_row: 
     false
 }
 
-/// Paint a laid-out line using the shaper's own glyph positions.
-/// Unlike `paint_line`, which forces each glyph back to its logical cell's
-/// `column * cell_width` (which undoes bidi reorder and disconnects Arabic
-/// joining), this honors `glyph.position_along_baseline` directly, so RTL
-/// reorder and contextual shaping are preserved.
-fn paint_complex_line(line: &Line, baseline: Vector2F, scene: &mut Scene) {
+/// Paint a laid-out line that the shaper reordered and contextually shaped,
+/// placing every glyph at its *visual* cell: `visual_columns[glyph.index] *
+/// cell_width`. That keeps the bidi reorder and the Arabic joining forms the
+/// shaper produced — which `paint_line` destroys by mapping each glyph back to
+/// its logical cell — while still landing each glyph on the terminal's cell
+/// grid, so cell backgrounds, the cursor and mouse selection all line up with
+/// what is drawn. Falls back to the shaper's own positions when the row needs
+/// no reordering.
+fn paint_complex_line(
+    line: &Line,
+    baseline: Vector2F,
+    cell_width: f32,
+    visual_columns: Option<&[usize]>,
+    scene: &mut Scene,
+) {
     for run in &line.runs {
         let glyph_color = run.styles.foreground_color.unwrap_or_default();
 
         for glyph in &run.glyphs {
-            let glyph_origin = baseline + glyph.position_along_baseline;
+            let glyph_origin = match visual_columns.and_then(|cols| cols.get(glyph.index)) {
+                Some(column) => {
+                    baseline
+                        + vec2f(
+                            *column as f32 * cell_width,
+                            glyph.position_along_baseline.y(),
+                        )
+                }
+                None => baseline + glyph.position_along_baseline,
+            };
 
             scene.draw_glyph(
                 glyph_origin,
