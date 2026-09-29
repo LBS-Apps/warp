@@ -63,3 +63,69 @@ fn font_id_for_native_font_round_trips_across_sizes() {
         );
     }
 }
+
+#[test]
+fn test_monospace_font_draws_hebrew_on_the_cell_grid() {
+    // Hebrew in a coding font must come from a cell-width face, or the
+    // one-glyph-per-cell terminal painting leaves gaps inside words.
+    let Ok(courier) = font::new_from_name(MONOSPACE_HEBREW_FALLBACK, 13.) else {
+        return; // Font not installed; the fallback is skipped too.
+    };
+    let _ = courier;
+    // Hack is the terminal's default font; the system's own Hebrew fallback
+    // for it is the proportional Lucida Grande.
+    let hack_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../app/assets/bundled/fonts/hack/Hack-Regular.ttf"
+    ))
+    .unwrap();
+    let hack = font::new_from_buffer(&hack_bytes)
+        .unwrap()
+        .clone_with_font_size(13.);
+    let with_fallback = with_monospace_hebrew_fallback(hack.clone());
+    assert_eq!(
+        run_fonts(&with_fallback, "ab וי cd"),
+        ["Hack-Regular", MONOSPACE_HEBREW_FALLBACK, "Hack-Regular"]
+    );
+
+    // Other scripts keep the system's choice.
+    assert_eq!(
+        run_fonts(&with_fallback, "مرحبا"),
+        run_fonts(&hack, "مرحبا")
+    );
+
+    // Proportional (UI) fonts are left alone.
+    let helvetica = font::new_from_name("Helvetica", 13.).unwrap();
+    assert_eq!(
+        run_fonts(&with_monospace_hebrew_fallback(helvetica.clone()), "וי"),
+        run_fonts(&helvetica, "וי")
+    );
+}
+
+fn run_fonts(font: &CTFont, text: &str) -> Vec<String> {
+    use core_foundation::attributed_string::CFMutableAttributedString;
+    use core_text::line::CTLine;
+    use core_text::string_attributes::kCTFontAttributeName;
+
+    let mut string = CFMutableAttributedString::new();
+    string.replace_str(&CFString::new(text), CFRange::init(0, 0));
+    string.set_attribute(
+        CFRange::init(0, string.char_len()),
+        unsafe { kCTFontAttributeName },
+        font,
+    );
+    let line = CTLine::new_with_attributed_string(string.as_concrete_TypeRef());
+    line.glyph_runs()
+        .iter()
+        .map(|run| {
+            let font: CTFont = unsafe {
+                run.attributes()
+                    .unwrap()
+                    .get(kCTFontAttributeName)
+                    .downcast::<CTFont>()
+                    .unwrap()
+            };
+            font.postscript_name()
+        })
+        .collect()
+}
