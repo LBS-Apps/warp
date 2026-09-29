@@ -1215,6 +1215,31 @@ impl GridHandler {
     /// are painted in logical order, where `cols` already is the logical range.
     fn bidi_selected_cols(grid_row: &Row, cols: &Range<usize>) -> Option<Vec<bool>> {
         let len = grid_row.line_length();
+        let (entries, entry_cols, spans) = Self::bidi_row_spans(grid_row)?;
+
+        let mut selected = vec![false; len];
+        for (entry, span) in spans.iter().enumerate() {
+            if span.start <= cols.end && span.end > cols.start {
+                let col = entry_cols[entry];
+                // Cover the wide char's spacer column too, so a selection
+                // edge cannot split a cell pair.
+                for flag in selected.iter_mut().skip(col).take(entries[entry].1) {
+                    *flag = true;
+                }
+            }
+        }
+        Some(selected)
+    }
+
+    /// For a row the renderer bidi-reorders, return its occupied cells as
+    /// `(char, width)` entries in logical order, each entry's logical column,
+    /// and the visual column span each entry's glyph is painted in. None for
+    /// rows painted in logical order.
+    #[allow(clippy::type_complexity)]
+    fn bidi_row_spans(
+        grid_row: &Row,
+    ) -> Option<(Vec<(char, usize)>, Vec<usize>, Vec<Range<usize>>)> {
+        let len = grid_row.line_length();
         let mut entries = Vec::with_capacity(len);
         let mut entry_cols = Vec::with_capacity(len);
         for col in 0..len {
@@ -1237,19 +1262,53 @@ impl GridHandler {
         }
 
         let spans = bidi::visual_spans(&entries)?;
+        Some((entries, entry_cols, spans))
+    }
 
-        let mut selected = vec![false; len];
-        for (entry, span) in spans.iter().enumerate() {
-            if span.start <= cols.end && span.end > cols.start {
-                let col = entry_cols[entry];
-                // Cover the wide char's spacer column too, so a selection
-                // edge cannot split a cell pair.
-                for flag in selected.iter_mut().skip(col).take(entries[entry].1) {
-                    *flag = true;
-                }
-            }
+    /// The logical cell whose glyph is painted at the visual (on-screen)
+    /// point `point`. Unchanged for rows painted in logical order.
+    pub fn bidi_visual_to_logical(&self, point: Point) -> Point {
+        let original = self.maybe_translate_point_from_displayed_to_original(point);
+        let Some(row) = self.row(original.row) else {
+            return point;
+        };
+        let Some((_, entry_cols, spans)) = Self::bidi_row_spans(row.as_ref()) else {
+            return point;
+        };
+        match spans.iter().position(|span| span.contains(&point.col)) {
+            Some(entry) => Point::new(point.row, entry_cols[entry]),
+            None => point,
         }
-        Some(selected)
+    }
+
+    /// The visual (on-screen) columns covered by the glyphs of the logical
+    /// cells `start.col..=end.col` on one row, as an end-inclusive range.
+    /// A word inside one direction run is painted contiguously, so this is
+    /// exactly its on-screen extent. Unchanged for rows painted in logical
+    /// order, and for ranges spanning rows.
+    pub fn bidi_logical_to_visual_range(&self, start: Point, end: Point) -> (Point, Point) {
+        if start.row != end.row {
+            return (start, end);
+        }
+        let original = self.maybe_translate_point_from_displayed_to_original(start);
+        let Some(row) = self.row(original.row) else {
+            return (start, end);
+        };
+        let Some((_, entry_cols, spans)) = Self::bidi_row_spans(row.as_ref()) else {
+            return (start, end);
+        };
+        let covered = entry_cols
+            .iter()
+            .zip(&spans)
+            .filter(|(col, _)| (start.col..=end.col).contains(col))
+            .map(|(_, span)| span);
+        let (Some(first), Some(last)) = (
+            covered.clone().map(|span| span.start).min(),
+            covered.map(|span| span.end - 1).max(),
+        ) else {
+            return (start, end);
+        };
+        (Point::new(start.row, first), Point::new(end.row, last))
     }
 
     /// Convert range between two points to a String.

@@ -2910,3 +2910,69 @@ fn plain_ltr_row_partial_selection_is_unchanged_by_bidi_mapping() {
         "plain"
     );
 }
+
+// --- Double-click (semantic) selection on bidi rows ----------------------
+//
+// A double-click lands on a visual column. On a bidi-reordered row that
+// column shows a glyph from a different logical cell, so the word search must
+// start from the clicked glyph's logical cell, and the resulting word must be
+// handed back as the visual columns it is painted in.
+
+const BIDI_TEMPLATE_ROW: &str =
+    "*בנוסף, הגישה לקבוצת הוואטסאפ הפרטית תסתיים ב-{{private_groups_exp}}.*";
+
+/// Visual column of the `nth` character (logical order) of `row`.
+fn visual_col_of_char(row: &str, nth: usize) -> usize {
+    let entries: Vec<(char, usize)> = row.chars().map(|c| (c, 1)).collect();
+    crate::bidi::visual_spans(&entries).expect("row is bidi")[nth].start
+}
+
+fn double_click_copy(row: &str, click_col: usize) -> String {
+    use crate::model::index::Side;
+    use crate::model::selection::Selection;
+    use warp_core::semantic_selection::SemanticSelection;
+    use warpui_core::text::SelectionType;
+
+    let blockgrid = mock_blockgrid(row);
+    let grid = &blockgrid.grid_handler;
+    let location = Point::new(0, click_col);
+    let mut selection = Selection::new(SelectionType::Semantic, location, Side::Left);
+    selection.update(location, Side::Right);
+    let range = selection
+        .to_range(grid, &SemanticSelection::mock(false, ""))
+        .expect("selection has a range");
+    grid.bounds_to_string(
+        range.start,
+        range.end,
+        false,
+        RespectObfuscatedSecrets::No,
+        false,
+        RespectDisplayedOutput::No,
+    )
+}
+
+#[test]
+fn bidi_row_double_click_on_a_hebrew_word_copies_that_word() {
+    // Click the middle letter (י) of הגישה.
+    let nth = BIDI_TEMPLATE_ROW.chars().position(|c| c == 'ג').unwrap() + 1;
+    let col = visual_col_of_char(BIDI_TEMPLATE_ROW, nth);
+    assert_eq!(double_click_copy(BIDI_TEMPLATE_ROW, col), "הגישה");
+}
+
+#[test]
+fn bidi_row_double_click_on_a_word_mid_run_copies_that_word() {
+    let nth = BIDI_TEMPLATE_ROW.chars().position(|c| c == 'ק').unwrap();
+    let col = visual_col_of_char(BIDI_TEMPLATE_ROW, nth);
+    assert_eq!(double_click_copy(BIDI_TEMPLATE_ROW, col), "לקבוצת");
+}
+
+#[test]
+fn bidi_row_double_click_on_the_ascii_tail_is_unchanged() {
+    let nth = BIDI_TEMPLATE_ROW.find("private").unwrap();
+    let nth = BIDI_TEMPLATE_ROW[..nth].chars().count() + 2;
+    let col = visual_col_of_char(BIDI_TEMPLATE_ROW, nth);
+    assert_eq!(
+        double_click_copy(BIDI_TEMPLATE_ROW, col),
+        "private_groups_exp"
+    );
+}
