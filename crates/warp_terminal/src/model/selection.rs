@@ -500,11 +500,20 @@ impl Selection {
             };
         }
 
-        // first, get the bounds for normal, non-smart-selection
-        let mut range_start =
-            grid_handler.semantic_search_left(start, |c| is_word_boundary_char(selection, c));
-        let mut range_end =
-            grid_handler.semantic_search_right(end, |c| is_word_boundary_char(selection, c));
+        // first, get the bounds for normal, non-smart-selection. The clicked
+        // points are visual columns; on a bidi-reordered row the word search
+        // must walk the logical cells from the glyph actually under the
+        // pointer, and its result goes back out as painted columns.
+        let mut range_start = grid_handler
+            .semantic_search_left(grid_handler.bidi_visual_to_logical(start), |c| {
+                is_word_boundary_char(selection, c)
+            });
+        let mut range_end = grid_handler
+            .semantic_search_right(grid_handler.bidi_visual_to_logical(end), |c| {
+                is_word_boundary_char(selection, c)
+            });
+        (range_start, range_end) =
+            grid_handler.bidi_logical_to_visual_range(range_start, range_end);
 
         if selection.smart_select_enabled() && self.smart_select_override.is_some() {
             let smart_select_override = self
