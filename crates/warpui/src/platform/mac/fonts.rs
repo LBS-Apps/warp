@@ -2,19 +2,28 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, anyhow, bail};
 use core_foundation::array::{CFArray, CFArrayRef};
-use core_foundation::base::{CFEqual, CFHash, CFType, CFTypeRef, ItemRef, TCFType};
+use core_foundation::base::{
+    CFEqual, CFHash, CFRange, CFType, CFTypeRef, ItemRef, TCFType, kCFAllocatorDefault,
+};
+use core_foundation::characterset::{CFCharacterSet, CFCharacterSetCreateWithCharactersInRange};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef, UniChar};
+use core_graphics::base::CGFloat;
 use core_graphics::display::CGSize;
 use core_graphics::font::{CGFont, CGGlyph};
-use core_text::font::{CTFont, cascade_list_for_languages as ct_cascade_list_for_languages};
+use core_graphics::geometry::CGAffineTransform;
+use core_text::font::{
+    CTFont, CTFontRef, cascade_list_for_languages as ct_cascade_list_for_languages,
+};
 use core_text::font_descriptor::{
-    CTFontDescriptor, CTFontDescriptorCopyAttribute, SymbolicTraitAccessors, TraitAccessors,
+    CTFontDescriptor, CTFontDescriptorCopyAttribute, CTFontDescriptorRef, SymbolicTraitAccessors,
+    TraitAccessors, kCTFontCascadeListAttribute, kCTFontCharacterSetAttribute,
     kCTFontFamilyNameAttribute, kCTFontLanguagesAttribute, kCTFontNameAttribute,
     kCTFontOrientationHorizontal,
 };
@@ -470,12 +479,12 @@ impl FontDB {
         match self.native_fonts.entry((font_id, OrderedFloat(size))) {
             Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => entry
-                .insert(
+                .insert(with_monospace_hebrew_fallback(
                     self.rasterizer
                         .font_for_id(font_id)
                         .native_font()
                         .clone_with_font_size(size as f64),
-                )
+                ))
                 .clone(),
         }
     }
@@ -684,6 +693,102 @@ impl crate::platform::TextLayoutSystem for FontDB {
             first_line_head_indent,
         )
     }
+}
+
+/// Hebrew fallback font for monospace fonts: its Hebrew glyphs all advance
+/// 0.600em, against 0.602em for a typical coding font's cell.
+const MONOSPACE_HEBREW_FALLBACK: &str = "CourierNewPSMT";
+
+/// The Hebrew block, U+0590..=U+05FF.
+const HEBREW_BLOCK: CFRange = CFRange {
+    location: 0x0590,
+    length: 0x70,
+};
+
+/// Put a monospace Hebrew font first in a monospace font's cascade list.
+///
+/// Coding fonts rarely carry Hebrew, and the system fallback Core Text picks
+/// for them (Lucida Grande) is proportional: letters such as ו and י are half
+/// a cell wide. The terminal paints complex-script rows one glyph per cell so
+/// selection and copying agree with what is on screen, which leaves those
+/// narrow letters stranded in wide gaps inside a word. A cell-width Hebrew
+/// face removes the gaps. The cascade entry is limited to the Hebrew block,
+/// so every other script keeps the system's choice, and a machine without the
+/// font simply falls through to the system list.
+fn with_monospace_hebrew_fallback(font: CTFont) -> CTFont {
+    if !is_fixed_pitch(&font) {
+        return font;
+    }
+
+    let hebrew = unsafe {
+        CFCharacterSet::wrap_under_create_rule(CFCharacterSetCreateWithCharactersInRange(
+            kCFAllocatorDefault,
+            HEBREW_BLOCK,
+        ))
+    };
+    let fallback = font_descriptor::new_from_attributes(&CFDictionary::from_CFType_pairs(&[
+        (
+            unsafe { CFString::wrap_under_get_rule(kCTFontNameAttribute) },
+            CFString::new(MONOSPACE_HEBREW_FALLBACK).as_CFType(),
+        ),
+        (
+            unsafe { CFString::wrap_under_get_rule(kCTFontCharacterSetAttribute) },
+            hebrew.as_CFType(),
+        ),
+    ]));
+    let cascade = font_descriptor::new_from_attributes(&CFDictionary::from_CFType_pairs(&[(
+        unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) },
+        CFArray::from_CFTypes(&[fallback]).as_CFType(),
+    )]));
+
+    unsafe {
+        let font_ref = CTFontCreateCopyWithAttributes(
+            font.as_concrete_TypeRef(),
+            font.pt_size(),
+            ptr::null(),
+            cascade.as_concrete_TypeRef(),
+        );
+        if font_ref.is_null() {
+            return font;
+        }
+        CTFont::wrap_under_create_rule(font_ref)
+    }
+}
+
+/// Whether `font` is a fixed-pitch (coding) font. Many coding fonts, Hack
+/// among them, do not set the monospace trait, so a narrow and a wide letter
+/// are measured instead.
+fn is_fixed_pitch(font: &CTFont) -> bool {
+    if font.symbolic_traits().is_monospace() {
+        return true;
+    }
+    let chars: [UniChar; 2] = ['i' as u16, 'W' as u16];
+    let mut glyphs: [CGGlyph; 2] = [0; 2];
+    if !unsafe { font.get_glyphs_for_characters(chars.as_ptr(), glyphs.as_mut_ptr(), 2) } {
+        return false;
+    }
+    let mut advances = [CGSize {
+        width: 0.0,
+        height: 0.0,
+    }; 2];
+    unsafe {
+        font.get_advances_for_glyphs(
+            kCTFontOrientationHorizontal,
+            glyphs.as_ptr(),
+            advances.as_mut_ptr(),
+            2,
+        );
+    }
+    advances[0].width > 0.0 && (advances[0].width - advances[1].width).abs() < 0.01
+}
+
+unsafe extern "C" {
+    fn CTFontCreateCopyWithAttributes(
+        font: CTFontRef,
+        size: CGFloat,
+        matrix: *const CGAffineTransform,
+        attributes: CTFontDescriptorRef,
+    ) -> CTFontRef;
 }
 
 #[cfg(test)]
