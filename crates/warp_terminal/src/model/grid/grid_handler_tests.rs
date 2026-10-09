@@ -2976,3 +2976,49 @@ fn bidi_row_double_click_on_the_ascii_tail_is_unchanged() {
         "private_groups_exp"
     );
 }
+
+// --- Mouse reports on bidi rows ------------------------------------------
+//
+// A program running with mouse reporting on (a TUI prompt, an editor) moves
+// its cursor to the cell a click report names, and it counts cells in
+// logical order. On a bidi-reordered row the report has to name the cell
+// whose glyph is under the pointer; naming the on-screen column puts the
+// program on the mirror-image character of the RTL run.
+
+const PROMPT_ROW: &str = "❯ [Image #1] לדוגמה אם אני רושם עזה במקום במילה לעכבר";
+
+/// The logical column a left-click on visual column `click_col` reports.
+fn reported_col(row: &str, click_col: usize) -> usize {
+    use crate::model::mouse::{MouseAction, MouseButton, MouseState};
+
+    let blockgrid = mock_blockgrid(row);
+    MouseState::new(MouseButton::Left, MouseAction::Pressed, Default::default())
+        .set_point_under_pointer(Point::new(0, click_col), &blockgrid.grid_handler)
+        .maybe_point()
+        .expect("report has a point")
+        .col
+}
+
+#[test]
+fn bidi_row_mouse_report_names_the_clicked_hebrew_letter() {
+    let byte = PROMPT_ROW.find("לעכבר").unwrap();
+    let nth = PROMPT_ROW[..byte].chars().count();
+    let col = visual_col_of_char(PROMPT_ROW, nth);
+    assert_ne!(col, nth, "the row must actually be reordered");
+    assert_eq!(reported_col(PROMPT_ROW, col), nth);
+}
+
+#[test]
+fn bidi_row_mouse_report_names_every_clicked_cell() {
+    for nth in 0..PROMPT_ROW.chars().count() {
+        let col = visual_col_of_char(PROMPT_ROW, nth);
+        assert_eq!(reported_col(PROMPT_ROW, col), nth, "click on char {nth}");
+    }
+}
+
+#[test]
+fn ltr_row_mouse_report_is_the_clicked_column() {
+    for col in 0..12 {
+        assert_eq!(reported_col("❯ [Image #1] hello", col), col);
+    }
+}
