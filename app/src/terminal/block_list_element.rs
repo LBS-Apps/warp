@@ -1451,7 +1451,9 @@ impl BlockListElement {
             let within_block = blocklist_point.and_then(|point| {
                 viewport
                     .block_list_point_to_grid_point(point)
-                    .map(|within_block| point_from_first_visible_row(&viewport, within_block))
+                    .map(|within_block| {
+                        point_from_first_visible_row(model.block_list(), &viewport, within_block)
+                    })
             });
             drop(model);
 
@@ -1623,8 +1625,11 @@ impl BlockListElement {
                                 let within_block = viewport.block_list_point_to_grid_point(point);
 
                                 if let Some(within_block) = within_block {
-                                    let grid_point =
-                                        point_from_first_visible_row(&viewport, within_block);
+                                    let grid_point = point_from_first_visible_row(
+                                        model.block_list(),
+                                        &viewport,
+                                        within_block,
+                                    );
                                     let mouse_state = MouseState::new(
                                         MouseButton::Left,
                                         MouseAction::Pressed,
@@ -1771,7 +1776,11 @@ impl BlockListElement {
                         && !should_intercept_mouse(&model, modifiers.shift, app);
 
                     if alt_mouse_action {
-                        let grid_point = point_from_first_visible_row(&viewport, within_block);
+                        let grid_point = point_from_first_visible_row(
+                            model.block_list(),
+                            &viewport,
+                            within_block,
+                        );
                         let mouse_state =
                             MouseState::new(MouseButton::Left, MouseAction::Released, *modifiers);
                         drop(model);
@@ -2043,7 +2052,11 @@ impl BlockListElement {
                     if on_long_running_block
                         && !should_intercept_mouse(&model, modifiers.shift, app)
                     {
-                        let grid_point = point_from_first_visible_row(&viewport, within_block);
+                        let grid_point = point_from_first_visible_row(
+                            model.block_list(),
+                            &viewport,
+                            within_block,
+                        );
                         let mouse_state = MouseState::new(
                             MouseButton::LeftDrag,
                             MouseAction::Pressed,
@@ -3126,11 +3139,21 @@ fn output_grid_visible_cursor_shape(block: &Block) -> Option<CursorShape> {
 
 /// With a `WithinBlock<IndexPoint>`, the point will count rows with 0 starting with the beginning
 /// of the block grid. This function adjusts the row so that 0 starts at the first row visible in
-/// the viewport.
+/// the viewport, and the column to the logical cell whose glyph is painted there (see
+/// [`MouseState::set_point_under_pointer`]).
 fn point_from_first_visible_row(
+    block_list: &BlockList,
     viewport: &ViewportState<'_>,
     within_block: WithinBlock<IndexPoint>,
 ) -> IndexPoint {
+    let col = block_list
+        .block_at(within_block.block_index)
+        .and_then(|block| block.grid_of_type(within_block.grid))
+        .map_or(within_block.inner.col, |grid| {
+            grid.grid_handler()
+                .bidi_visual_to_logical(within_block.inner)
+                .col
+        });
     // Get the first visible output row to adjust for scrolled blocks
     let first_visible_row = if within_block.grid == GridType::Output {
         viewport
@@ -3141,7 +3164,7 @@ fn point_from_first_visible_row(
     };
     // Adjust row to be relative to the visible viewport, not the entire block grid
     let visible_row = within_block.inner.row.saturating_sub(first_visible_row);
-    IndexPoint::new(visible_row, within_block.inner.col)
+    IndexPoint::new(visible_row, col)
 }
 
 impl Element for BlockListElement {
