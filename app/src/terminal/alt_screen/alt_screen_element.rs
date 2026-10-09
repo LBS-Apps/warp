@@ -284,7 +284,9 @@ impl AltScreenElement {
             }));
         } else {
             ctx.dispatch_typed_action(TerminalAction::MaybeClearAltSelect);
-            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
+            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(
+                self.reported_mouse_state(mouse_state, point),
+            ));
         }
         true
     }
@@ -312,7 +314,9 @@ impl AltScreenElement {
                 });
             }
         } else {
-            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
+            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(
+                self.reported_mouse_state(mouse_state, point),
+            ));
         }
         true
     }
@@ -364,7 +368,9 @@ impl AltScreenElement {
             // see Linear issue at https://linear.app/warpdotdev/issue/CORE-1039/combine-the-mousebutton-and-mouseaction-enums-to-avoid-impossible.
             let mouse_state =
                 MouseState::new(MouseButton::Move, MouseAction::Pressed, Default::default());
-            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
+            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(
+                self.reported_mouse_state(mouse_state, point),
+            ));
         }
 
         // Allow the event to continue propagating.
@@ -406,7 +412,9 @@ impl AltScreenElement {
         }
 
         if !should_intercept_mouse(&self.model.lock(), mouse_state.modifiers().shift, app) {
-            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
+            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(
+                self.reported_mouse_state(mouse_state, point),
+            ));
         }
 
         true
@@ -441,7 +449,9 @@ impl AltScreenElement {
             is_mouse_dragged = true;
         }
         if !should_intercept_mouse(&self.model.lock(), mouse_state.modifiers().shift, app) {
-            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
+            ctx.dispatch_typed_action(TerminalAction::AltMouseAction(
+                self.reported_mouse_state(mouse_state, point),
+            ));
         }
         is_mouse_dragged
     }
@@ -506,6 +516,12 @@ impl AltScreenElement {
             .max(0.)
             .min(total_height as f32 - 1.) as usize;
         Point::new(row, column)
+    }
+
+    /// `mouse_state` as reported to the program for the pointer at `point`.
+    fn reported_mouse_state(&self, mouse_state: MouseState, point: Point) -> MouseState {
+        let model = self.model.lock();
+        mouse_state.set_point_under_pointer(point, model.alt_screen().grid_handler())
     }
 
     /// Renders our own selection.
