@@ -38,12 +38,18 @@ if [ "${1:-}" = "--dev" ]; then
 fi
 
 # --- power gate -------------------------------------------------------------
-if ! pmset -g batt | grep -q "AC Power"; then
-  PCT="$(pmset -g batt | grep -oE '[0-9]+%' | head -1)"
-  echo "Refusing to build on battery power (currently ${PCT:-unknown})." >&2
-  echo "A ${PROFILE} build pins all cores for up to an hour. Plug in and rerun." >&2
-  exit 1
-fi
+# Capture first, then match: under pipefail `pmset | grep -q` reports a match as
+# failure whenever grep exits before pmset finishes writing (SIGPIPE, 141), which
+# is every time once a UPS adds a line to the output.
+BATT="$(pmset -g batt)"
+case "$BATT" in
+  *"AC Power"*) ;;
+  *)
+    PCT="$(printf '%s\n' "$BATT" | grep -oE '[0-9]+%' || true)"
+    echo "Refusing to build on battery power (currently ${PCT%%$'\n'*})." >&2
+    echo "A ${PROFILE} build pins all cores for up to an hour. Plug in and rerun." >&2
+    exit 1 ;;
+esac
 
 # --- disk gate --------------------------------------------------------------
 # A release-lto target/ for this workspace runs tens of GB.
