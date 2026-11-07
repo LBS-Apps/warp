@@ -3169,7 +3169,10 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
         // before reaching launch().
         LaunchMode::Tui { .. } => unreachable!("LaunchMode::Tui is handled before launch()"),
         LaunchMode::App { .. } | LaunchMode::Test { .. } => {
-            let should_skip_restore = launch_mode.args().has_skip_restore_launch_url()
+            let should_skip_restore = launch_mode
+                .args()
+                .skip_restore_launch_url()
+                .is_some_and(uri::launch_url_has_config)
                 || launch_mode
                     .args()
                     .urls
