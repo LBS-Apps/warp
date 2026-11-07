@@ -19,6 +19,32 @@ use crate::secret::{CodexMethod, CreateProvider, SecretCommand};
 use crate::task::{MessageCommand, TaskCommand};
 
 #[test]
+fn skip_restore_needs_a_launch_link_that_asks_for_it() {
+    let scheme = ChannelState::url_scheme();
+    let skips = |urls: &[String]| {
+        AppArgs {
+            urls: urls.iter().map(|url| url.parse().unwrap()).collect(),
+            ..Default::default()
+        }
+        .has_skip_restore_launch_url()
+    };
+
+    assert!(skips(&[format!("{scheme}://launch/name?skip_restore=1")]));
+    assert!(skips(&[
+        "file:///tmp".to_owned(),
+        format!("{scheme}://launch/name?skip_restore=1"),
+    ]));
+
+    assert!(!skips(&[]));
+    assert!(!skips(&[format!("{scheme}://launch/name")]));
+    assert!(!skips(&[format!("{scheme}://launch/name?skip_restore=0")]));
+    assert!(!skips(&[format!(
+        "{scheme}://tab_config/name?skip_restore=1"
+    )]));
+    assert!(!skips(&["other://launch/name?skip_restore=1".to_owned()]));
+}
+
+#[test]
 fn identifies_worker_subcommands() {
     assert!(is_worker_invocation("minidump-server"));
     #[cfg(unix)]
