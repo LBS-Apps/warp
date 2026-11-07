@@ -862,6 +862,15 @@ fn handle_tab_config_uri(primary_window_id: Option<WindowId>, url: &Url, ctx: &m
     });
 }
 
+/// Whether a launch link names a saved launch configuration. A link that does not must not replace
+/// the restored windows, because it would open nothing in their place.
+pub fn launch_url_has_config(url: &Url) -> bool {
+    get_launch_config_path(url.path()).is_some_and(|path| {
+        let configs = load_launch_configs(&crate::user_config::launch_configs_dir());
+        find_matching_config(path.as_str(), &configs).is_some()
+    })
+}
+
 /// Case-insensitive match against each tab config's file stem. Tab config
 /// `name` fields are not unique across files, so we key off the filename.
 ///

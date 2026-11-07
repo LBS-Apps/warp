@@ -26,7 +26,8 @@ fn skip_restore_needs_a_launch_link_that_asks_for_it() {
             urls: urls.iter().map(|url| url.parse().unwrap()).collect(),
             ..Default::default()
         }
-        .has_skip_restore_launch_url()
+        .skip_restore_launch_url()
+        .is_some()
     };
 
     assert!(skips(&[format!("{scheme}://launch/name?skip_restore=1")]));

@@ -204,10 +204,10 @@ pub struct AppArgs {
 }
 
 impl AppArgs {
-    /// Whether a launch configuration link asks, with `skip_restore=1`, to open in place of the
+    /// The launch configuration link that asks, with `skip_restore=1`, to open in place of the
     /// windows saved by the last run instead of alongside them.
-    pub fn has_skip_restore_launch_url(&self) -> bool {
-        self.urls.iter().any(|url| {
+    pub fn skip_restore_launch_url(&self) -> Option<&Url> {
+        self.urls.iter().find(|url| {
             url.scheme() == ChannelState::url_scheme()
                 && url.host_str() == Some("launch")
                 && url
